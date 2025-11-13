@@ -1,0 +1,23 @@
+# Node / frontend
+node_modules/
+frontend/dist/
+*.log
+
+# Python / backend
+.venv/
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project data (keep placeholder only)
+project_data/**
+!project_data/.gitkeep
+
+# Local credentials
+*.env
+**/*.secret.json
+
+

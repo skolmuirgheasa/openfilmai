@@ -1,0 +1,341 @@
+⭐ AGENT SYSTEM MESSAGE / INITIAL INSTRUCTIONS (Paste into Cursor)
+
+Name: OpenFilmAI
+Purpose: Build a scene-based AI filmmaking desktop app using Electron + React + Python + FFmpeg + MoviePy + external AI APIs.
+
+High-Level Context
+
+Your job is to build and maintain a modern MIT-licensed desktop application that generates, assembles, and smooths AI video clips into coherent long-form films.
+
+This is not a traditional NLE and must not drift toward building a full video editor. The interface is simple:
+
+Media library
+
+Lightweight scene/shot timeline
+
+Inspector panel
+
+AI generation tools
+
+You will receive a blueprint (below) and must follow it accurately.
+
+There is an older AI-video-editing project based on OpenShot in the repository. folder named ai_porting_bundle
+Before modifying or deleting anything, the agent must:
+
+Scan the existing folders
+
+Identify reusable assets (README summaries, AI API wrappers, FFmpeg helpers)
+
+Preserve anything useful and refactor it into the new architecture when needed
+
+Do NOT expand the old OpenShot fork
+
+Migrate only reusable logic (e.g., API calls, prompt metadata structures)
+
+Technology Stack You MUST Use
+Frontend
+
+Electron
+
+React + TypeScript
+
+TailwindCSS
+
+Radix UI
+
+React Player for video preview
+
+WaveSurfer.js for audio waveform previews
+
+Backend
+
+Python (FastAPI or aiohttp microservice)
+
+MoviePy for composition & audio/video merging
+
+FFmpeg CLI for:
+
+rendering
+
+optical-flow smoothing (mpdecimate + minterpolate)
+
+extracting first/last frames
+
+audio mixing
+
+AI Integrations
+
+Replicate API (video generation: Veo, NanoBanana, etc.)
+
+ElevenLabs API (TTS + voice-to-voice)
+
+Wavespeed/InfiniteTalk (lip-sync)
+
+Data Storage
+
+JSON or SQLite for:
+
+scene metadata
+
+shot metadata
+
+character profiles
+
+project settings
+
+⭐ The Blueprint You Must Build Toward
+
+(Cursor agent: treat this as the spec overriding all inherited structures)
+
+Application Structure
+root/
+  frontend/             # Electron + React + TS UI
+  backend/              # Python FastAPI server
+    ai/                 # AI wrappers
+    video/              # FFmpeg + MoviePy ops
+    storage/            # metadata persistence
+  project_data/         # user projects
+  package.json
+  requirements.txt
+  electron.js
+
+Core UI Layout
+Left Sidebar: Media & Character Library
+You need to make this look like a 2026 AI native app. Make it look beautiful! 
+All generated or imported assets automatically appear here
+
+Filter by:
+
+video
+
+audio
+
+voice
+
+image
+
+characters
+
+scenes/shots
+
+Drag assets into timeline
+
+Character profiles stored here
+
+Center Pane: Timeline (Lightweight)
+
+Shows scenes → shots in order
+
+Drag to reorder
+
+Clicking a shot highlights it in inspector
+
+Basic playback cursor
+
+NOT a full NLE (no ripple edits, keyframes, etc.) But should be able to use arrows to click through frames one at a time and play the full video comprised of clips and export together as one (or separate).
+
+Right Pane: Inspector
+
+Shot:
+
+prompt
+
+model
+
+reference start frame
+
+continuity options
+
+regenerate button
+
+extract first/last frame button
+
+Scene:
+
+scene-level prompt
+
+audio track inputs
+
+Character:
+
+reference portrait(s)
+
+ElevenLabs voice ID
+
+prompt injection fields
+
+Media Behavior
+
+When AI backend generates media, it is:
+
+saved into project_data/<project_id>/media/
+
+metadata persisted
+
+frontend notified
+
+asset auto-appears in media library
+
+Backend Responsibilities
+Shot Generation Workflow
+
+Receive prompt + optional reference frame + character metadata
+
+Call Replicate
+
+Download MP4 into project folder
+
+Use FFmpeg to extract first/last frames
+
+Return media + metadata to frontend
+
+Voice Generation
+
+Typed script → ElevenLabs TTS
+
+Recorded voice → ElevenLabs voice conversion
+
+Save WAV → add to library
+
+Lip-Sync Generation
+
+Take (video, voice WAV) → Wavespeed
+
+Return new synced MP4
+
+Optical-Flow Transition (Auto-smooth)
+
+If end_frame(shot A) ≈ start_frame(shot B) → run:
+
+ffmpeg -i A -i B -lavfi "mpdecimate;minterpolate=fps=60:mi_mode=mci" output.mp4
+
+Scene Rendering
+
+Concatenate shots using MoviePy
+
+Apply transitions (optical-flow if applicable)
+
+Add audio tracks (voice/music/ambient)
+
+Export scene_render.mp4
+
+Film Rendering
+
+Concatenate all scenes
+
+Normalize audio
+
+Export final film file
+
+⭐ Rules for the Agent
+
+Never implement a full NLE timeline.
+Only simple sequential clip playback and drag ordering.
+
+Always follow the scene-shot architecture.
+Shots generate → stitched into scenes → scenes combine into film.
+
+AI is always handled by Python, never by JS.
+
+Whenever generating new files, auto-update metadata.
+
+Reuse any existing old project code only if:
+
+It does AI API calls
+
+It helps with FFmpeg
+
+It stores metadata
+
+Otherwise ignore old codebase
+
+Architecture must default to MIT license friendly design.
+
+All rendering = FFmpeg or MoviePy.
+Never embed media processing into JS.
+
+If unsure, ask for clarification before major structural decisions.
+
+⭐ Initial Tasks for the Agent
+
+These should be executed in the following order:
+
+Task 1 — Scan the repo
+
+Identify old OpenShot-based folders
+
+Document reusable pieces
+
+Do NOT integrate them yet
+
+Produce a migration report
+
+Task 2 — Scaffold new architecture
+
+Create folder structure
+
+Set up Electron + React + Tailwind baseline
+
+Set up Python FastAPI service
+
+Establish IPC bridge or REST calls between them
+
+Task 3 — Implement project creation
+
+Create project directory
+
+Create empty metadata files
+
+Display in UI
+
+Task 4 — Implement media library UI
+
+Read project/media folder
+
+Display assets by type
+
+Implement filters
+
+Task 5 — Implement lightweight timeline
+
+Column of scenes
+
+Row of shots
+
+Drag to reorder
+
+Playback cursor
+
+Load preview in center pane
+
+Task 6 — Implement AI shot generator
+
+Basic Replicate call
+
+Save MP4
+
+Extract frames
+
+Add to library
+
+Update timeline
+
+Task 7 — Implement voice + lip sync
+
+ElevenLabs TTS + voice conversion
+
+Wavespeed lip-sync InfiniteTalk (both image + audio file lip sync and video + audio file lip sync, two separate endpoints)
+
+Task 8 — Implement optical-flow smoothing
+
+FFmpeg pipeline
+
+Metadata flags
+
+Task 9 — Implement rendering (scene + film)
+
+MoviePy concatenation
+
+Audio layering
+
+⭐ Ready to Use

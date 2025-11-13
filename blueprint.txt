@@ -1,0 +1,476 @@
+Electron + React (frontend) + Python (MoviePy + FFmpeg + AI APIs) backend
+Scene/shot-based workflow, lightweight timeline, media library, character system
+1. Technology Stack
+Frontend
+
+Electron (desktop host)
+
+React + TypeScript
+
+TailwindCSS
+
+Radix UI (modals, panels, dropdowns)
+
+React Player (video preview)
+
+WaveSurfer.js (audio waveform visualization)
+
+Backend
+
+Python 3.11+
+
+FastAPI (preferred) or aiohttp (microservice)
+
+MoviePy (composition, audio/video assembly)
+
+FFmpeg CLI (rendering, transitions, frame extraction, optical flow)
+
+SQLite or JSON (metadata store)
+
+AI Integrations
+
+Replicate API (video generation: Veo, NanoBanana, etc.)
+
+ElevenLabs API (TTS + voice-to-voice conversion)
+
+Wavespeed / InfiniteTalk (lip-sync generation)
+
+Communication:
+
+Electron frontend ↔ Python backend via localhost REST or IPC.
+
+2. Project Architecture
+root/
+  frontend/
+    src/
+      components/
+      pages/
+      hooks/
+      utils/
+  backend/
+    server.py
+    ai/
+      replicate_client.py
+      elevenlabs_client.py
+      wavespeed_client.py
+    video/
+      moviepy_ops.py
+      ffmpeg_ops.py
+      continuity.py
+    storage/
+      metadata.py
+  shared/
+    types/
+  project_data/
+  package.json
+  requirements.txt
+  electron.js
+
+3. Core Concepts
+3.1 Project Structure
+project/
+  scenes/
+    scene_001/
+      shots/
+        shot_001.mp4
+        shot_002.mp4
+      frames/
+        shot_001_first.png
+        shot_001_last.png
+      audio/
+        voice.wav
+        ambient.wav
+        music.wav
+      scene.json
+      scene_render.mp4
+  film_render.mp4
+  metadata.json
+  characters.json
+  settings.json
+
+3.2 Data Models
+Scene JSON
+{
+  "scene_id": "scene_001",
+  "title": "Aubrey Arrives in London",
+  "shots": [
+    {
+      "shot_id": "shot_001",
+      "prompt": "...",
+      "model": "veo",
+      "duration": 6,
+      "file_path": "shots/shot_001.mp4",
+      "first_frame_path": "frames/shot_001_first.png",
+      "last_frame_path": "frames/shot_001_last.png",
+      "continuity_source": null
+    }
+  ],
+  "audio_tracks": {
+    "voice": "audio/voice.wav",
+    "music": "audio/music.wav",
+    "ambient": "audio/ambient.wav"
+  }
+}
+
+Character JSON
+{
+  "character_id": "char_ruthven",
+  "name": "Lord Ruthven",
+  "portrait_paths": ["portraits/ruthven_01.png"],
+  "voice_id": "elevenlabs_voice_id",
+  "prompt_style_tokens": "pale, uncanny, aristocratic"
+}
+
+4. Frontend Requirements
+4.1 Layout
+
+Three main panes:
+
+Left Panel — Media & Character Library
+
+Lists:
+
+Scenes
+
+Shots
+
+Video files
+
+Audio files
+
+Images (start/end frames)
+
+Characters
+
+Filters by media type
+
+Drag to timeline
+
+Center Panel — Timeline + Preview
+
+Lightweight timeline (NOT a full NLE)
+
+Shows scenes → shots sequentially
+
+Single “Video” track
+
+Optional “Voice”, “Music” track lanes
+
+Drag to reorder shots
+
+Playback cursor
+
+Spacebar plays the scene or full sequence
+
+React Player loads current selection
+
+Right Panel — Inspector
+
+Shot Inspector
+
+Prompt text
+
+Model dropdown
+
+Duration
+
+Aspect ratio
+
+“Use last frame of previous shot” toggle
+
+Preview of first/last frame
+
+Buttons:
+
+Regenerate shot
+
+Extract frames
+
+Smooth transition to next shot
+
+Scene Inspector
+
+Scene-level narrative prompt
+
+Add/replace audio tracks (voice/music/ambient)
+
+Character Inspector
+
+Assign portrait(s)
+
+Assign ElevenLabs voice ID
+
+Set prompt injection style tokens
+
+5. Backend Requirements (Python)
+5.1 Shot Generation
+
+POST /generate/shot
+
+Params:
+
+prompt
+
+model
+
+duration
+
+aspect_ratio
+
+character metadata (if selected)
+
+optional reference_first_frame_path
+
+Actions:
+
+Call Replicate
+
+Save MP4 to shots/
+
+Extract first/last frames via FFmpeg
+
+Update scene JSON
+
+Notify frontend
+
+5.2 Voice Generation
+
+POST /generate/voice
+
+Input:
+
+script text OR recorded WAV
+
+character voice ID
+
+Output:
+
+voice.wav saved into audio folder
+
+ElevenLabs TTS or voice-conversion
+
+5.3 Lip-Sync
+
+POST /generate/lipsync
+
+Inputs:
+
+shot video
+
+voice WAV
+
+Output:
+
+new synced MP4
+
+Use Wavespeed / InfiniteTalk API
+
+5.4 FFmpeg Optical Flow Smoothing
+
+smooth_transition(clip1, clip2)
+Implementation (Python subprocess):
+
+ffmpeg -i clip1 -i clip2 \
+  -lavfi "mpdecimate;minterpolate=fps=60:mi_mode=mci" \
+  output.mp4
+
+
+Used when:
+
+two adjacent shots share matching start/end frames
+
+user forces smoothing
+
+5.5 Scene Rendering (MoviePy)
+
+POST /render/scene
+Steps:
+
+Load all shots in order
+
+For each adjacent pair:
+
+If continuity frames match → apply smoothing
+
+Concatenate video clips
+
+Add audio tracks (voice, ambient, music)
+
+Save scene_render.mp4
+
+5.6 Full Film Rendering
+
+POST /render/film
+
+Concatenate all scene_render.mp4 files
+
+Apply fade-in/out between scenes
+
+Normalize audio
+
+Output film_render.mp4
+
+6. Continuity Engine
+Automatic
+
+Backend detects if:
+hash(last_frame_of_shot_A) == hash(first_frame_of_shot_B)
+If yes → automatically run optical-flow smoothing.
+
+Manual
+
+Inspector toggle:
+
+“Use previous shot’s last frame as reference start frame”
+
+Backend:
+
+Extract last frame of previous shot
+
+Set as reference_first_frame_path for next shot
+
+Store in metadata
+
+7. Character System Requirements
+
+Characters influence:
+
+AI generation prompts
+
+Face reference images
+
+ElevenLabs voice identity
+
+UI:
+
+Character list
+
+Portrait upload
+
+Voice picker
+
+Prompt style notes
+
+Auto-applied whenever a character is selected for a shot
+
+8. Settings
+
+Stored in settings.json:
+
+{
+  "default_model": "veo",
+  "default_aspect_ratio": "16:9",
+  "enable_optical_flow": true,
+  "default_voice": "elevenlabs_voice_id",
+  "scene_prompt_template": "..."
+}
+
+9. App-Wide Workflow
+Generate Shot
+
+User selects scene
+
+Click “Add Shot / Generate Shot”
+
+Chooses prompt, model, character
+
+Backend:
+
+generates video
+
+extracts frames
+
+stores files and metadata
+
+Frontend:
+
+auto-adds clip to media library
+
+auto-places in scene timeline
+
+Render Scene
+
+Load ordered shots
+
+Auto-smooth if frames match
+
+Concatenate
+
+Add voice/ambient/music
+
+Output scene_render.mp4
+
+Render Film
+
+Combine scene_render.mp4 files
+
+Normalize audio
+
+Output film_render.mp4
+
+10. V1 Milestones (for Cursor)
+1. Scaffolding
+
+Electron app
+
+React layout (3 panels)
+
+FastAPI backend
+
+JSON metadata system
+
+Basic project creation flow
+
+2. Shot Generation
+
+Replicate client
+
+Saving MP4
+
+Extract frames
+
+Display in UI
+
+3. Scene Management
+
+Add/show scenes
+
+Add/show shots
+
+Reordering
+
+Saving scene JSON
+
+4. Voice + Lip-Sync
+
+ElevenLabs
+
+Wavespeed
+
+Audio waveform viewer
+
+5. Optical Flow Engine
+
+FFmpeg mpdecimate + minterpolate
+
+Auto-smoothing detection
+
+6. Rendering Engine
+
+Scene rendering via MoviePy
+
+Full film rendering
+
+7. UI Polish
+
+Inspector panel
+
+Metadata viewer
+
+Regeneration workflows
+
+Character library
+
+Reference frame manager
+
+Progress indicators

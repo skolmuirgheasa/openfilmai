@@ -1,0 +1,34 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+/* App chrome */
+body {
+  @apply font-sans;
+  background-image: linear-gradient(180deg, rgba(124,58,237,0.06), transparent 35%),
+    radial-gradient(800px 400px at 70% -50px, rgba(88,28,135,0.25), transparent),
+    radial-gradient(600px 300px at -10% 0, rgba(67,56,202,0.18), transparent);
+  background-color: #0a0a0a;
+}
+
+.card {
+  @apply rounded-xl border border-neutral-800/80 bg-neutral-900/50 backdrop-blur;
+}
+
+.button {
+  @apply inline-flex items-center gap-2 rounded-lg border border-neutral-700/70 bg-neutral-900/60 px-3 py-2 text-sm hover:bg-neutral-800/70 transition-colors;
+}
+
+.button-primary {
+  @apply inline-flex items-center gap-2 rounded-lg bg-violet-600 hover:bg-violet-700 text-white px-3 py-2 text-sm transition-colors;
+}
+
+.field {
+  @apply w-full text-sm px-3 py-2 rounded-lg bg-neutral-900/70 border border-neutral-700/70 focus:outline-none focus:ring-2 focus:ring-violet-500/40;
+}
+
+

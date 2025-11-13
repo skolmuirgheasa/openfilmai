@@ -1,0 +1,504 @@
+AI MEDIA GENERATION SYSTEM — MASTER SPEC (DROP INTO CURSOR)
+Covers: video, images, audio, lip-sync, character integration, provider differences, reference image logic, start/end frame logic, and UI → backend → provider flow.
+1. Overview
+
+The user can generate Video, Image, or Voice assets.
+
+Generation always follows this logic:
+
+User selects Media Type
+
+User selects Provider
+
+App loads provider-specific input schema
+
+App auto-injects:
+
+character reference images
+
+character voice IDs
+
+start-end frames if enabled
+
+Backend calls the correct provider endpoint using real API docs, not assumptions
+
+Backend saves media + metadata
+
+UI updates media library and timeline
+
+Everything must be modeled so that different providers have different capabilities, and the UI + backend adjust dynamically.
+
+2. Media Types
+VIDEO
+IMAGE
+VOICE
+
+
+Each has its own provider list + rules.
+
+3. Providers (Core List)
+3.1 Google Vertex
+
+Veo 3.1 (video)
+
+Nano (NanoBanana) (video)
+
+Capabilities (from docs):
+
+prompt text
+
+duration
+
+aspect ratio
+
+start frame (image)
+
+end frame (image)
+
+reference images (NOT the same as start/end frames)
+
+seed
+
+safety filters
+
+frame rate
+
+Important rule:
+Some models allow:
+
+reference_image instead of start/end frame
+Never both simultaneously.
+
+App must enforce model-specific rules using the schema derived from Vertex API docs.
+
+3.2 Replicate
+
+Umbrella provider. Supports many models:
+
+Video models
+
+Veo (unofficial mirror)
+
+SVD models
+
+Motion models
+
+Other experimental generators
+
+Image models
+
+ByteDance SeedDream / SeedRem / Seedance (high-quality character images for start/end frames)
+
+Voice models
+
+None (we use ElevenLabs for TTS/V2V)
+
+Each Replicate model has its own:
+
+input schema
+
+parameter names
+
+allowed image/video inputs
+
+App behavior:
+
+read model metadata endpoint from Replicate API
+
+dynamically build the UI input fields based on the schema
+
+No hardcoding.
+
+3.3 ElevenLabs
+
+For Voice-only generation.
+
+Two modes:
+
+1. Text to Voice
+
+Inputs:
+
+text script
+
+voice_id
+
+model (eleven_monolingual_v1, etc)
+
+stability, similarity, style
+
+2. Voice to Voice
+
+Inputs:
+
+audio file recorded in-app
+
+target voice_id
+
+style parameters
+
+Output:
+
+WAV/MP3 file
+
+Important:
+Characters in your app have a voice_id stored in their profile.
+This automatically populates the voice field when generating character speech.
+
+3.4 Wavespeed / InfiniteTalk
+
+For Lip Sync only.
+
+Two endpoints:
+
+Endpoint A: Audio + Image → Talking Image
+
+Inputs:
+
+reference image
+
+voice audio
+
+optional style parameters
+
+Endpoint B: Audio + Video → Re-lip-synced Video
+
+Inputs:
+
+source video
+
+voice audio
+
+optional motion stabilization
+
+Your app must expose both.
+
+This is independent from video generation.
+It is used after generating voice using ElevenLabs.
+
+4. Character Integration (Critical)
+
+Each character has:
+
+{
+  character_id: string,
+  name: string,
+  reference_images: [paths],
+  voice_id: string | null,
+  style_tokens: string | null
+}
+
+
+Characters influence:
+
+Video generation
+
+Their reference_images get injected into providers that accept reference images
+
+NOT start frames
+
+NOT end frames
+
+Image generation
+
+Their reference image is injected as the “reference face” to maintain identity
+
+Voice generation
+
+voice_id auto selected in ElevenLabs
+
+If user records audio → voice-to-voice uses that voice_id as target
+
+Lip sync
+
+If video contains character X → use X’s reference image when lip syncing (if using image+audio mode)
+
+5. Start/End Frame Logic (Continuity Engine Integration)
+
+Your app must correctly distinguish between:
+
+5.1 Start Frame
+
+Extracted from:
+
+last frame of previous shot
+
+OR selected manually
+
+Used only when model supports a “start_frame” parameter.
+
+5.2 End Frame
+
+Used when model supports "end_frame".
+
+5.3 Reference Image
+
+Character identity guidance — NOT continuity.
+
+5.4 Rules:
+
+Providers vary:
+
+Provider	Start Frame	End Frame	Reference Image	Notes
+Vertex Veo 3.1	Yes	Yes	Yes	reference image mutually exclusive with start/end
+Vertex Nano	Yes (maybe?)	uncertain	rarely	must check docs
+Replicate Veo	Maybe	Maybe	Yes	depends on specific model
+SeedDream (ByteDance)	No	No	Yes	image models only
+Wavespeed	No	No	Yes	only for talking images
+5.5 Enforcement:
+
+Your backend MUST:
+
+load provider capabilities from a provider-schema file
+
+block invalid combinations:
+
+"Start + End + reference" (not allowed on Veo)
+
+"Start frame" on models that don't support it
+
+"Reference images" on models that support only start/end
+
+UI should disable fields automatically.
+
+6. VIDEO GENERATION FLOW (All Providers)
+
+This is the authoritative flow.
+
+STEP 1: User selects:
+
+Video
+
+Provider: Vertex / Replicate
+
+Model: Veo / Nano / SVD / etc
+
+UI loads model schema.
+
+STEP 2: App shows allowed fields dynamically:
+
+Examples:
+
+For Veo 3.1:
+
+prompt
+
+duration
+
+aspect ratio
+
+start_frame?
+
+end_frame?
+
+reference_image?
+
+seed?
+
+Only show what the model supports.
+
+STEP 3: Character Integration
+
+If user attaches a character:
+
+If model allows reference_image → auto insert character reference image
+
+If model allows style tokens → append to prompt
+
+If model also allows start_frame → do NOT insert character reference as start frame
+
+Start frame is only for continuity.
+
+STEP 4: Continuity Integration
+
+If “Use last frame as start frame” → backend extracts last frame of previous shot.
+
+If model does not support start_frame → UI must prevent this option.
+
+STEP 5: Backend calls provider API exactly as per docs
+
+No guessing endpoint names.
+No assumptions.
+Use provider docs supplied by you.
+
+Backend stores:
+
+mp4
+
+first frame
+
+last frame
+
+JSON metadata
+
+7. IMAGE GENERATION FLOW
+
+Used for:
+
+character portrait creation
+
+start/end frame alternates
+
+concept art / stills
+
+Providers:
+
+Replicate (SeedDream / ByteDance models)
+
+Vertex Image (if available)
+
+Any other image models
+
+Inputs:
+
+prompt
+
+reference_image (for character consistency)
+
+style tokens
+
+Outputs:
+
+png/jpg
+
+metadata
+
+8. VOICE GENERATION FLOW
+A. Text → Voice
+
+Inputs:
+
+text
+
+character.voice_id
+
+model params
+
+Outputs:
+
+voice.wav
+Saved to scene/audio.
+
+B. Voice → Voice
+
+Inputs:
+
+recorded audio
+
+character.voice_id
+
+style params
+
+Outputs:
+
+converted.wav
+
+Backend must implement:
+
+/generate/voice_tts
+/generate/voice_v2v
+
+9. LIP-SYNC FLOW (Wavespeed)
+
+Two endpoints:
+
+A. Audio + Image → Talking Portrait
+
+Use when:
+
+generating a static talking head clip (e.g., narrator)
+
+Inputs:
+
+character reference image
+
+voice audio
+
+Returns:
+
+mp4 talking image
+
+B. Audio + Video → Re-lip-synced Clip
+
+Use when:
+
+applying dialogue to a generated video shot
+
+Inputs:
+
+shot.mp4
+
+voice.wav
+
+Returns:
+
+synced.mp4
+
+Backend must save final clip as new version of the shot, update metadata.
+
+10. METADATA STORAGE (Unified)
+
+For every asset generated:
+
+media_id
+type (video|image|voice)
+provider
+model
+input_params
+character_id (optional)
+start_frame_used (bool)
+end_frame_used (bool)
+reference_images_used (array)
+file_path
+timestamp
+
+
+Scene JSON stores shot order.
+Film rendering uses only scene->shot relations.
+
+11. REQUIRED BACKEND ROUTES (Authoritative)
+Video
+POST /ai/video/generate
+POST /ai/video/get-capabilities
+POST /ai/video/smooth-transition
+
+Image
+POST /ai/image/generate
+
+Voice
+POST /ai/voice/tts
+POST /ai/voice/v2v
+
+Lip-Sync
+POST /ai/lipsync/image
+POST /ai/lipsync/video
+
+Frames + Continuity
+POST /ai/extract-frames
+POST /ai/use-last-frame
+
+Rendering
+POST /render/scene
+POST /render/film
+
+12. SUMMARY (Give this to Cursor)
+
+This is now the canonical definition for:
+
+how videos are generated
+
+how images are generated
+
+how voices are generated
+
+how lip-sync is applied
+
+how characters’ reference images/voice IDs integrate
+
+how start/end frames work
+
+how provider rules differ
+
+how backend enforces model-specific schemas
+
+This should be inserted as the Media Generation System spec.
