@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Plus, FolderOpen, Sparkles, Settings2, Video, Play } from 'lucide-react';
-import ReactPlayer from 'react-player';
-import { useEffect as ReactUseEffect } from 'react';
+import { useEffect as ReactUseEffect, useRef as ReactUseRef } from 'react';
 
 type Health = { status: string };
 
@@ -28,6 +27,17 @@ export default function App() {
   const [provider, setProvider] = useState<'replicate' | 'vertex'>('replicate');
   const [nowPlaying, setNowPlaying] = useState<string>('');
   const [playError, setPlayError] = useState<string>('');
+  const [headInfo, setHeadInfo] = useState<{ status?: number; type?: string; length?: string }>({});
+  const videoRef = ReactUseRef<HTMLVideoElement | null>(null);
+  // Vertex inputs and generation state
+  const [vxUsePrevLast, setVxUsePrevLast] = useState<boolean>(false);
+  const [vxStartImageId, setVxStartImageId] = useState<string | null>(null);
+  const [vxEndImageId, setVxEndImageId] = useState<string | null>(null);
+  const [vxRefImageIds, setVxRefImageIds] = useState<string[]>([]);
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [vxEndFromVideoId, setVxEndFromVideoId] = useState<string | null>(null);
+  const [vxEndFramePath, setVxEndFramePath] = useState<string | null>(null);
+  const [vxImageMode, setVxImageMode] = useState<'none' | 'start_end' | 'reference'>('none');
   function ProjectPicker({ projectId, onSwitch }: { projectId: string; onSwitch: (pid: string) => void }) {
     const [projects, setProjects] = useState<string[]>([]);
     const [newId, setNewId] = useState<string>(projectId);
@@ -80,6 +90,11 @@ export default function App() {
       .then((r) => r.json() as Promise<Health>)
       .then((data) => setHealth(data.status ?? 'unknown'))
       .catch(() => setHealth('offline'));
+    // Load global settings on launch
+    fetch('http://127.0.0.1:8000/settings')
+      .then((r) => r.json())
+      .then((d) => setSettings(d.settings ?? {}))
+      .catch(() => {});
 
     // Load scenes for demo project
     fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes`)
@@ -106,6 +121,39 @@ export default function App() {
   async function refreshMedia() {
     const m = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`).then((r) => r.json());
     setMedia(m.media ?? []);
+  }
+
+  async function debugHead(url: string) {
+    try {
+      const res = await fetch(url, { method: 'HEAD' });
+      setHeadInfo({
+        status: res.status,
+        type: res.headers.get('Content-Type') || undefined,
+        length: res.headers.get('Content-Length') || undefined
+      });
+      console.log('HEAD', url, res.status, res.headers.get('Content-Type'), res.headers.get('Content-Length'));
+    } catch (e: any) {
+      setHeadInfo({ status: undefined, type: undefined, length: undefined });
+      console.warn('HEAD failed', url, e?.message || e);
+    }
+  }
+
+  function selectMediaForPlayback(m: any) {
+    if (m.type === 'video' || m.type === 'audio') {
+      const url = `http://127.0.0.1:8000${m.url}`;
+      setCurrentImageUrl(null);
+      setCurrentVideoUrl(url);
+      setNowPlaying(url);
+      setPlayError('');
+      debugHead(url);
+    } else {
+      const url = `http://127.0.0.1:8000${m.url}`;
+      setCurrentVideoUrl(null);
+      setCurrentImageUrl(url);
+      setNowPlaying(url);
+      setPlayError('');
+      debugHead(url);
+    }
   }
 
   useEffect(() => {
@@ -312,6 +360,15 @@ export default function App() {
               <button className="button text-xs px-2 py-1 disabled:opacity-50" disabled={health !== 'ok'} onClick={() => fileInputRef.current?.click()}>
               Import
             </button>
+            <button
+              className="button text-xs px-2 py-1"
+              onClick={async () => {
+                await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/scan`, { method: 'POST' });
+                await refreshMedia();
+              }}
+            >
+              Scan
+            </button>
             <input
               ref={fileInputRef}
               type="file"
@@ -327,7 +384,7 @@ export default function App() {
                   const form = new FormData();
                   form.append('file', f);
                   try {
-                    const res = await fetch('http://127.0.0.1:8000/storage/demo_project/media', { method: 'POST', body: form });
+                    const res = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`, { method: 'POST', body: form });
                     // If backend is down, this will throw and we break out to show alert once
                     const data = await res.json();
                     if (data.status !== 'ok') {
@@ -368,14 +425,8 @@ export default function App() {
                 key={m.id}
                 className={`w-full text-left text-sm text-neutral-300 inline-flex items-center gap-2 hover:underline ${selectedMediaId === m.id ? 'text-violet-300' : ''}`}
                 onClick={() => {
-                  if (m.type === 'video' || m.type === 'audio') {
-                    setCurrentImageUrl(null);
-                    setCurrentVideoUrl(`http://127.0.0.1:8000${m.url}`);
-                  } else {
-                    setCurrentVideoUrl(null);
-                    setCurrentImageUrl(`http://127.0.0.1:8000${m.url}`);
-                  }
                   setSelectedMediaId(m.id);
+                  selectMediaForPlayback(m);
                 }}
               >
                 <FolderOpen className="w-4 h-4" /> {m.id}
@@ -391,13 +442,6 @@ export default function App() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold">Timeline & Preview</h2>
             <div className="flex items-center gap-2">
-              <button
-                onClick={initProject}
-                disabled={isCreating}
-                className="button-primary disabled:opacity-60"
-              >
-                {isCreating ? 'Creating…' : 'New Project'}
-              </button>
               <Dialog.Root
                 open={isGenOpen}
                 onOpenChange={async (open) => {
@@ -415,7 +459,7 @@ export default function App() {
                 </Dialog.Trigger>
                 <Dialog.Portal>
                   <Dialog.Overlay className="fixed inset-0 bg-black/60" />
-                  <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] card p-5">
+                  <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[640px] max-h-[85vh] overflow-y-auto card p-5">
                     <Dialog.Title className="text-sm font-semibold mb-3">Generate Shot</Dialog.Title>
                     <Dialog.Description className="text-xs text-neutral-400 mb-3">
                       Generate a shot (choose provider). Continuity option uses the last frame of the previous shot.
@@ -429,6 +473,191 @@ export default function App() {
                         </select>
                       </div>
                     </div>
+                    {provider === 'vertex' ? (
+                      <div className="space-y-3 mb-3">
+                        <div className="flex items-center gap-4">
+                          <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
+                            <input
+                              type="radio"
+                              name="vxImageMode"
+                              checked={vxImageMode === 'none'}
+                              onChange={() => {
+                                setVxImageMode('none');
+                                setVxUsePrevLast(false);
+                                setVxStartImageId(null);
+                                setVxEndImageId(null);
+                                setVxRefImageIds([]);
+                                setVxEndFromVideoId(null);
+                                setVxEndFramePath(null);
+                              }}
+                            />
+                            No provided images
+                          </label>
+                          <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
+                            <input
+                              type="radio"
+                              name="vxImageMode"
+                              checked={vxImageMode === 'start_end'}
+                              onChange={() => {
+                                setVxImageMode('start_end');
+                                setVxRefImageIds([]);
+                              }}
+                            />
+                            Start/End frames
+                          </label>
+                          <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
+                            <input
+                              type="radio"
+                              name="vxImageMode"
+                              checked={vxImageMode === 'reference'}
+                              onChange={() => {
+                                setVxImageMode('reference');
+                                setVxUsePrevLast(false);
+                                setVxStartImageId(null);
+                                setVxEndImageId(null);
+                                setVxEndFromVideoId(null);
+                                setVxEndFramePath(null);
+                              }}
+                            />
+                            Reference images
+                          </label>
+                        </div>
+                        <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
+                          <input
+                            type="checkbox"
+                            checked={vxUsePrevLast && vxImageMode === 'start_end'}
+                            onChange={(e) => {
+                              setVxImageMode('start_end');
+                              setVxUsePrevLast(e.target.checked);
+                              if (e.target.checked) {
+                                setVxStartImageId(null);
+                                setVxRefImageIds([]);
+                              }
+                            }}
+                          />
+                          Use previous shot's last frame as start
+                        </label>
+                        {vxImageMode === 'start_end' ? (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs text-neutral-400 mb-1">Start frame (image)</label>
+                            <select
+                              className="field"
+                              disabled={vxUsePrevLast}
+                              value={vxStartImageId ?? ''}
+                              onChange={(e) => setVxStartImageId(e.target.value || null)}
+                            >
+                              <option value="">None</option>
+                              {media.filter((m) => m.type === 'image').map((m) => (
+                                <option key={m.id} value={m.id}>{m.id}</option>
+                              ))}
+                            </select>
+                            {/* Preview */}
+                            {vxStartImageId ? (
+                              <div className="mt-2">
+                                <img
+                                  src={`http://127.0.0.1:8000${media.find(m => m.id === vxStartImageId)?.url ?? ''}`}
+                                  className="w-full h-24 object-cover rounded border border-neutral-800"
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                          <div>
+                            <label className="block text-xs text-neutral-400 mb-1">End frame (image)</label>
+                            <select
+                              className="field"
+                              disabled={false}
+                              value={vxEndImageId ?? ''}
+                              onChange={(e) => setVxEndImageId(e.target.value || null)}
+                            >
+                              <option value="">None</option>
+                              {media.filter((m) => m.type === 'image').map((m) => (
+                                <option key={m.id} value={m.id}>{m.id}</option>
+                              ))}
+                            </select>
+                            {vxEndImageId ? (
+                              <div className="mt-2">
+                                <img
+                                  src={`http://127.0.0.1:8000${media.find(m => m.id === vxEndImageId)?.url ?? ''}`}
+                                  className="w-full h-24 object-cover rounded border border-neutral-800"
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs text-neutral-400 mb-1">End frame from video</label>
+                            <select
+                              className="field"
+                              value={vxEndFromVideoId ?? ''}
+                              onChange={(e) => setVxEndFromVideoId(e.target.value || null)}
+                            >
+                              <option value="">None</option>
+                              {media.filter((m) => m.type === 'video').map((m) => (
+                                <option key={m.id} value={m.id}>{m.id}</option>
+                              ))}
+                            </select>
+                            <button
+                              className="button text-[11px] px-2 py-1 mt-2"
+                              disabled={!vxEndFromVideoId}
+                              onClick={async () => {
+                                const vid = media.find(m => m.id === vxEndFromVideoId);
+                                if (!vid) return;
+                                const r = await fetch('http://127.0.0.1:8000/frames/last', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ project_id: projectId, video_path: vid.path })
+                                });
+                                const d = await r.json();
+                                if (d.status === 'ok') {
+                                  setVxEndFramePath(d.image_path);
+                                  setVxImageMode('start_end');
+                                } else {
+                                  alert(d.detail || 'Failed to extract last frame');
+                                }
+                              }}
+                            >
+                              Extract last frame
+                            </button>
+                          </div>
+                          <div>
+                            {vxEndFramePath ? (
+                              <div className="mt-6">
+                                <div className="text-[11px] text-neutral-400 mb-1">Extracted end frame</div>
+                                <img
+                                  src={`http://127.0.0.1:8000/files/${vxEndFramePath.replace('project_data/', '')}`}
+                                  className="w-full h-24 object-cover rounded border border-neutral-800"
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                        ) : null}
+                        <div>
+                          <label className="block text-xs text-neutral-400 mb-1">Reference images (mutually exclusive with start/end)</label>
+                          <div className="flex flex-wrap gap-2">
+                            {media.filter((m) => m.type === 'image').map((m) => {
+                              const selected = vxRefImageIds.includes(m.id);
+                              return (
+                                <button
+                                  key={m.id}
+                                  disabled={vxImageMode !== 'reference'}
+                                  className={`button text-[11px] px-2 py-1 ${selected ? 'border-violet-500' : ''}`}
+                                  onClick={() => {
+                                    setVxRefImageIds((prev) =>
+                                      selected ? prev.filter((id) => id !== m.id) : [...prev, m.id]
+                                    );
+                                  }}
+                                >
+                                  {selected ? '✓ ' : ''}{m.id}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                     <label className="block text-xs text-neutral-400 mb-1">Prompt</label>
                     <textarea
                       className="field h-28"
@@ -449,11 +678,22 @@ export default function App() {
                           let reference_frame: string | undefined = undefined;
                           if (isContPrevFrame && (sceneDetail?.shots?.length ?? 0) > 0) {
                             const last = sceneDetail!.shots[sceneDetail!.shots.length - 1];
-                            const ref = await fetch(`http://127.0.0.1:8000/storage/demo_project/scenes/${selectedSceneId}/shots/${last.shot_id}/last-frame`).then((r) => r.json());
+                            const ref = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${last.shot_id}/last-frame`).then((r) => r.json());
                             if (ref.status === 'ok') {
                               reference_frame = ref.path;
                             }
                           }
+                          setIsGenerating(true);
+                          const startFramePath =
+                            provider === 'vertex'
+                              ? (vxUsePrevLast ? reference_frame : (vxStartImageId ? media.find(m => m.id === vxStartImageId)?.path : undefined))
+                              : reference_frame;
+                        const endFramePath =
+                          provider === 'vertex'
+                            ? (vxEndFramePath ?? (vxEndImageId ? media.find(m => m.id === vxEndImageId)?.path : undefined))
+                            : undefined;
+                          const refImages =
+                            provider === 'vertex' ? vxRefImageIds.map(id => media.find(m => m.id === id)?.path!).filter(Boolean) : undefined;
                           const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -466,7 +706,10 @@ export default function App() {
                               duration: 8,
                               resolution: '1080p',
                               aspect_ratio: '16:9',
-                              reference_frame
+                              reference_frame: provider === 'replicate' ? reference_frame : undefined,
+                              start_frame_path: startFramePath,
+                              end_frame_path: endFramePath,
+                              reference_images: refImages
                             })
                           });
                           const data = await res.json();
@@ -482,10 +725,11 @@ export default function App() {
                           } else {
                             alert(data.detail || 'Generation failed');
                           }
+                          setIsGenerating(false);
                         }}
                         className="button-primary"
                       >
-                        Generate
+                        {isGenerating ? 'Generating…' : 'Generate'}
                       </button>
                     </div>
                   </Dialog.Content>
@@ -546,11 +790,29 @@ export default function App() {
             {currentImageUrl ? (
               <img src={currentImageUrl} className="w-full h-full object-contain bg-black" />
             ) : currentVideoUrl ? (
-              <ReactPlayer
-                url={currentVideoUrl}
+              <video
+                key={currentVideoUrl}
+                ref={videoRef}
+                src={currentVideoUrl}
                 controls
-                width="100%"
-                height="100%"
+                playsInline
+                preload="metadata"
+                crossOrigin="anonymous"
+                style={{ width: '100%', height: '100%', background: 'black' }}
+                onLoadedMetadata={() => {
+                  const dur = videoRef.current?.duration;
+                  console.log('Loaded metadata, duration=', dur);
+                }}
+                onCanPlay={() => {
+                  console.log('Video can play');
+                }}
+                onError={(e) => {
+                  const el = videoRef.current;
+                  // @ts-ignore
+                  const err = el?.error;
+                  console.error('Native video error', err);
+                  setPlayError(`Video error code=${err?.code ?? 'n/a'}`);
+                }}
                 onEnded={() => {
                   if (playIdx >= 0 && sceneDetail?.shots?.length) {
                     const next = playIdx + 1;
@@ -561,6 +823,8 @@ export default function App() {
                       const vidUrl = videoRel?.startsWith('project_data') ? `http://127.0.0.1:8000/files/${videoRel.replace('project_data/', '')}` : `http://127.0.0.1:8000/files/${videoRel ?? ''}`;
                       setCurrentImageUrl(null);
                       setCurrentVideoUrl(vidUrl);
+                      setNowPlaying(vidUrl);
+                      debugHead(vidUrl);
                     } else {
                       setPlayIdx(-1);
                     }
@@ -577,12 +841,18 @@ export default function App() {
             {nowPlaying ? (
               <>
                 Now playing: <a className="underline" href={nowPlaying} target="_blank" rel="noreferrer">{nowPlaying}</a>
+                {headInfo?.status ? (
+                  <span className="ml-2">
+                    [HEAD {headInfo.status} {headInfo.type || ''} {headInfo.length ? `${headInfo.length}B` : ''}]
+                  </span>
+                ) : null}
+                {/* Copy URL button removed per user preference */}
               </>
             ) : null}
             {playError ? <div className="text-red-400 mt-1">{playError}</div> : null}
           </div>
 
-          {/* Shots row as simple timeline chips */}
+          {/* Shots row with basic edit controls */}
           <div className="mt-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400 mb-2">Shots</div>
             <div className="flex gap-2 overflow-x-auto pr-1 items-center">
@@ -591,21 +861,78 @@ export default function App() {
                 const thumbUrl = thumbPath ? `http://127.0.0.1:8000/files/${thumbPath}` : null;
                 const videoRel = sh.file_path?.replace('project_data/', '');
                 const vidUrl = videoRel?.startsWith('project_data') ? `http://127.0.0.1:8000/files/${videoRel.replace('project_data/', '')}` : `http://127.0.0.1:8000/files/${videoRel ?? ''}`;
-                const widthPx = Math.max(120, (sh.duration ?? 8) * 40);
+                const duration = Math.max(0.5, (sh.duration ?? 8) - (sh.start_offset ?? 0) - (sh.end_offset ?? 0));
+                const widthPx = Math.max(120, duration * 40);
                 return (
-                  <button
-                    key={sh.shot_id}
-                    onClick={() => setCurrentVideoUrl(vidUrl)}
-                    className="rounded-lg overflow-hidden border border-neutral-800 hover:border-neutral-700 bg-neutral-900/50"
-                    style={{ width: `${widthPx}px` }}
-                  >
-                    <div className="aspect-video bg-black/60">
-                      {thumbUrl ? <img src={thumbUrl} className="w-full h-full object-cover" /> : null}
+                  <div key={sh.shot_id} className="rounded-lg overflow-hidden border border-neutral-800 bg-neutral-900/50" style={{ width: `${widthPx}px` }}>
+                    <button onClick={() => setCurrentVideoUrl(vidUrl)} className="w-full text-left">
+                      <div className="aspect-video bg-black/60">
+                        {thumbUrl ? <img src={thumbUrl} className="w-full h-full object-cover" /> : null}
+                      </div>
+                    </button>
+                    <div className="p-2 text-left space-y-2">
+                      <div className="text-xs text-neutral-300 break-all">{sh.shot_id}</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          className="button text-[11px] px-2 py-1"
+                          onClick={async () => {
+                            const newStart = Math.max(0, (sh.start_offset ?? 0) + 0.5);
+                            await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${sh.shot_id}`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ start_offset: newStart })
+                            });
+                            const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
+                            setSceneDetail(d.scene ?? null);
+                          }}
+                        >
+                          Trim L +
+                        </button>
+                        <button
+                          className="button text-[11px] px-2 py-1"
+                          onClick={async () => {
+                            const newEnd = Math.max(0, (sh.end_offset ?? 0) + 0.5);
+                            await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${sh.shot_id}`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ end_offset: newEnd })
+                            });
+                            const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
+                            setSceneDetail(d.scene ?? null);
+                          }}
+                        >
+                          Trim R +
+                        </button>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          defaultValue={sh.volume ?? 1}
+                          onChange={async (e) => {
+                            const v = parseFloat(e.currentTarget.value);
+                            await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${sh.shot_id}`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ volume: v })
+                            });
+                          }}
+                        />
+                        <button
+                          className="button text-[11px] px-2 py-1"
+                          onClick={async () => {
+                            await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${sh.shot_id}`, {
+                              method: 'DELETE'
+                            });
+                            const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
+                            setSceneDetail(d.scene ?? null);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
-                    <div className="p-2 text-left">
-                      <div className="text-xs text-neutral-300">{sh.shot_id}</div>
-                    </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>

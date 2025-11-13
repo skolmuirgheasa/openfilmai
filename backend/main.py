@@ -15,6 +15,9 @@ from backend.storage.files import (
     list_media,
     add_media,
     media_dirs,
+    ensure_project,
+    read_metadata,
+    write_metadata,
 )
 from backend.ai.replicate_client import ReplicateClient
 from backend.ai.vertex_client import VertexClient
@@ -56,6 +59,9 @@ class ShotGenerateRequest(BaseModel):
     duration: Optional[int] = 8
     resolution: Optional[str] = "1080p"
     aspect_ratio: Optional[str] = "16:9"
+    start_frame_path: Optional[str] = None
+    end_frame_path: Optional[str] = None
+    reference_images: Optional[List[str]] = None
 
 
 @app.post("/ai/generate-shot")
@@ -69,12 +75,18 @@ def generate_shot(req: ShotGenerateRequest):
             cred = s.get("vertex_service_account_path")
             pid = s.get("vertex_project_id")
             loc = s.get("vertex_location") or "us-central1"
+            temp_bucket = s.get("vertex_temp_bucket")
             if not cred or not pid:
                 raise RuntimeError("Vertex settings missing. Set service account path and project id in Settings.")
-            client_v = VertexClient(credentials_path=cred, project_id=pid, location=loc, model=req.model or "veo-3.1-generate-preview")
+            # Enforce mutual exclusivity: reference_images vs start/end frames
+            if (req.start_frame_path or req.end_frame_path) and (req.reference_images and len(req.reference_images) > 0):
+                raise RuntimeError("Vertex: start/end frame cannot be combined with reference images.")
+            client_v = VertexClient(credentials_path=cred, project_id=pid, location=loc, model=req.model or "veo-3.1-generate-preview", temp_bucket=temp_bucket)
             output_url = client_v.generate_video(
                 prompt=req.prompt,
-                first_frame_image=req.reference_frame,
+                first_frame_image=req.start_frame_path or req.reference_frame,
+                last_frame_image=req.end_frame_path,
+                reference_images=req.reference_images or None,
                 duration=req.duration or 8,
                 resolution=req.resolution or "1080p",
                 aspect_ratio=req.aspect_ratio or "16:9",
@@ -229,10 +241,21 @@ class ShotCreate(BaseModel):
     first_frame_path: Optional[str] = None
     last_frame_path: Optional[str] = None
     continuity_source: Optional[str] = None
+    start_offset: Optional[float] = 0.0
+    end_offset: Optional[float] = 0.0
+    volume: Optional[float] = 1.0
 
 
 @app.post("/storage/{project_id}/scenes/{scene_id}/shots")
 def api_add_shot(project_id: str, scene_id: str, body: ShotCreate):
+    # Ensure scene exists; if not, create it for robustness
+    scene = get_scene(project_id, scene_id)
+    if scene is None:
+        # Fallback create with a simple title
+        try:
+            add_scene(project_id, scene_id, scene_id.replace("_", " ").title())
+        except Exception:
+            pass
     shot = add_shot(project_id, scene_id, body.model_dump(exclude_none=True))
     return {"status": "ok", "shot": shot}
 
@@ -273,6 +296,195 @@ def api_list_projects():
             projects.append(p.name)
     return {"projects": projects}
 
+# Shot update/delete
+class ShotUpdate(BaseModel):
+    prompt: Optional[str] = None
+    duration: Optional[float] = None
+    start_offset: Optional[float] = None
+    end_offset: Optional[float] = None
+    volume: Optional[float] = None
+    file_path: Optional[str] = None
+
+
+@app.put("/storage/{project_id}/scenes/{scene_id}/shots/{shot_id}")
+def api_update_shot(project_id: str, scene_id: str, shot_id: str, body: ShotUpdate):
+    meta_path = PROJECT_DATA_DIR / project_id / "metadata.json"
+    if not meta_path.exists():
+        return {"status": "not_found"}
+    with open(meta_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    for s in data.get("scenes", []):
+        if s.get("scene_id") == scene_id:
+            for sh in s.get("shots", []):
+                if sh.get("shot_id") == shot_id:
+                    for k, v in body.model_dump(exclude_none=True).items():
+                        sh[k] = v
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+                    return {"status": "ok", "shot": sh}
+    return {"status": "not_found"}
+
+
+@app.delete("/storage/{project_id}/scenes/{scene_id}/shots/{shot_id}")
+def api_delete_shot(project_id: str, scene_id: str, shot_id: str):
+    meta_path = PROJECT_DATA_DIR / project_id / "metadata.json"
+    if not meta_path.exists():
+        return {"status": "not_found"}
+    with open(meta_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    for s in data.get("scenes", []):
+        if s.get("scene_id") == scene_id:
+            before = len(s.get("shots", []))
+            s["shots"] = [sh for sh in s.get("shots", []) if sh.get("shot_id") != shot_id]
+            after = len(s["shots"])
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return {"status": "ok", "deleted": before - after}
+    return {"status": "not_found"}
+
+
+@app.get("/media/metadata")
+def api_media_metadata(path: str):
+    """Return simple metadata like duration using ffprobe."""
+    from subprocess import run, PIPE
+    # Normalize to filesystem path
+    p = Path(path)
+    if not p.is_absolute():
+        p = Path.cwd() / path
+    if not p.exists():
+        return {"status": "not_found"}
+    try:
+        cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "format=duration", "-of", "default=nokey=1:noprint_wrappers=1", str(p)]
+        r = run(cmd, stdout=PIPE, stderr=PIPE, check=False, text=True)
+        dur = float(r.stdout.strip()) if r.stdout.strip() else None
+        return {"status": "ok", "duration": dur}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+class FrameExtractBody(BaseModel):
+    project_id: str
+    video_path: str  # absolute or project-relative path (e.g., project_data/...)
+    scene_id: Optional[str] = None
+    shot_id: Optional[str] = None
+
+def _normalize_path(p: str) -> Path:
+    pp = Path(p)
+    if not pp.is_absolute():
+        pp = Path.cwd() / p
+    return pp
+
+@app.post("/frames/last")
+def api_extract_last_frame(body: FrameExtractBody):
+    """Extract the last frame of a video into the project's images folder and return its path/url."""
+    try:
+        proj = PROJECT_DATA_DIR / body.project_id
+        media_images = proj / "media" / "images"
+        media_images.mkdir(parents=True, exist_ok=True)
+        video_p = _normalize_path(body.video_path)
+        if not video_p.exists():
+            return {"status": "not_found", "detail": f"Video not found: {video_p}"}
+        from backend.video.ffmpeg import extract_first_last_frames
+        # Use temp paths then move last frame into images folder
+        tmp_first = proj / "tmp_first.png"
+        tmp_last = proj / "tmp_last.png"
+        extract_first_last_frames(str(video_p), str(tmp_first), str(tmp_last))
+        # Final path name based on source video
+        out_name = f"{video_p.stem}_last.png"
+        out_path = media_images / out_name
+        try:
+            if out_path.exists():
+                out_path.unlink()
+        except Exception:
+            pass
+        tmp_last.replace(out_path)
+        rel = str(out_path.relative_to(PROJECT_DATA_DIR))
+        return {"status": "ok", "image_path": f"project_data/{rel}", "url": f"/files/{rel}"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+@app.post("/frames/first")
+def api_extract_first_frame(body: FrameExtractBody):
+    """Extract the first frame of a video into the project's images folder and return its path/url."""
+    try:
+        proj = PROJECT_DATA_DIR / body.project_id
+        media_images = proj / "media" / "images"
+        media_images.mkdir(parents=True, exist_ok=True)
+        video_p = _normalize_path(body.video_path)
+        if not video_p.exists():
+            return {"status": "not_found", "detail": f"Video not found: {video_p}"}
+        from backend.video.ffmpeg import extract_first_last_frames
+        tmp_first = proj / "tmp_first.png"
+        tmp_last = proj / "tmp_last.png"
+        extract_first_last_frames(str(video_p), str(tmp_first), str(tmp_last))
+        out_name = f"{video_p.stem}_first.png"
+        out_path = media_images / out_name
+        try:
+            if out_path.exists():
+                out_path.unlink()
+        except Exception:
+            pass
+        tmp_first.replace(out_path)
+        rel = str(out_path.relative_to(PROJECT_DATA_DIR))
+        return {"status": "ok", "image_path": f"project_data/{rel}", "url": f"/files/{rel}"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+@app.post("/storage/{project_id}/media/scan")
+def api_scan_media(project_id: str):
+    """
+    Scan project_data/<project_id>/media/{video,audio,images} for files that are not
+    present in metadata and add them. Returns number of new items indexed.
+    """
+    ensure_project(project_id)
+    proj_dir = PROJECT_DATA_DIR / project_id
+    media_dir = proj_dir / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    video_dir = media_dir / "video"
+    audio_dir = media_dir / "audio"
+    images_dir = media_dir / "images"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    existing = read_metadata(project_id).get("media", [])
+    existing_ids = set(item.get("id") for item in existing)
+
+    new_items = []
+
+    def add_item(file_path: Path, kind: str):
+        nonlocal new_items, existing_ids, existing
+        file_id = file_path.name
+        if file_id in existing_ids:
+            return
+        rel_from_project = str(file_path.relative_to(PROJECT_DATA_DIR))
+        url = f"/files/{rel_from_project}"
+        item = {
+            "id": file_id,
+            "type": kind,
+            "path": f"project_data/{rel_from_project}",
+            "url": url,
+        }
+        existing.append(item)
+        existing_ids.add(file_id)
+        new_items.append(item)
+
+    # Scan each folder
+    for f in video_dir.glob("*"):
+        if f.is_file() and f.suffix.lower() in {".mp4", ".mov", ".m4v"}:
+            add_item(f, "video")
+    for f in audio_dir.glob("*"):
+        if f.is_file() and f.suffix.lower() in {".wav", ".mp3", ".aac", ".flac"}:
+            add_item(f, "audio")
+    for f in images_dir.glob("*"):
+        if f.is_file() and f.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+            add_item(f, "image")
+
+    # Persist
+    meta = read_metadata(project_id)
+    meta["media"] = existing
+    write_metadata(project_id, meta)
+    return {"status": "ok", "indexed": len(new_items), "items": new_items}
+
 # Settings
 @app.get("/settings")
 def api_get_settings():
@@ -286,6 +498,7 @@ class SettingsBody(BaseModel):
     vertex_service_account_path: Optional[str] = None
     vertex_project_id: Optional[str] = None
     vertex_location: Optional[str] = None
+    vertex_temp_bucket: Optional[str] = None
 
 
 @app.post("/settings")

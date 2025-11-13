@@ -15,12 +15,14 @@ class VertexClient:
         project_id: str,
         location: str = "us-central1",
         model: str = "veo-3.1-generate-preview",
+        temp_bucket: str | None = None,
         timeout: int = 60,
     ):
         self.credentials_path = credentials_path
         self.project_id = project_id
         self.location = location
         self.model = model
+        self.temp_bucket = temp_bucket
         self.timeout = timeout
 
     def _access_token(self) -> str:
@@ -47,11 +49,12 @@ class VertexClient:
             self.credentials_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
         client = storage.Client(project=self.project_id, credentials=credentials)
-        bucket_name = f"{self.project_id}-openfilmai-temp"
-        try:
-            bucket = client.get_bucket(bucket_name)
-        except Exception:
-            bucket = client.create_bucket(bucket_name, location=self.location)
+        bucket_name = self.temp_bucket
+        if not bucket_name:
+            raise RuntimeError("Vertex temp_bucket not configured. Set settings.vertex_temp_bucket to an existing GCS bucket name.")
+        bucket = client.bucket(bucket_name)
+        if not bucket.exists():
+            raise RuntimeError(f"GCS bucket '{bucket_name}' does not exist or is not accessible by the service account.")
         blob_name = f"frames/{int(time.time())}_{os.path.basename(image_path)}"
         blob = bucket.blob(blob_name)
         blob.upload_from_filename(image_path)
