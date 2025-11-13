@@ -80,33 +80,82 @@ export default function App() {
     );
   }
   const [projectId, setProjectId] = useState<string>(() => {
-    return localStorage.getItem('projectId') || 'demo_project';
+    const stored = localStorage.getItem('projectId');
+    const initial = stored || 'vampyre';
+    localStorage.setItem('projectId', initial);
+    return initial;
   });
   const [selectedMediaId, setSelectedMediaId] = useState<string | null>(null);
 
   useEffect(() => {
-    // Attempt backend health check
-    fetch('http://127.0.0.1:8000/health')
-      .then((r) => r.json() as Promise<Health>)
-      .then((data) => setHealth(data.status ?? 'unknown'))
-      .catch(() => setHealth('offline'));
-    // Load global settings on launch
-    fetch('http://127.0.0.1:8000/settings')
-      .then((r) => r.json())
-      .then((d) => setSettings(d.settings ?? {}))
-      .catch(() => {});
-
-    // Load scenes for demo project
-    fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes`)
-      .then((r) => r.json())
-      .then((data) => {
-        const list = data.scenes ?? [];
-        setScenes(list);
-        if (!selectedSceneId && list.length > 0) {
-          setSelectedSceneId(list[0].scene_id);
+    let cancelled = false;
+    async function boot() {
+      // Wait for backend to be up to avoid connection refused spam
+      let ok = false;
+      for (let i = 0; i < 40; i++) {
+        try {
+          const r = await fetch('http://127.0.0.1:8000/health');
+          if (r.ok) {
+            const j = (await r.json()) as Health;
+            setHealth(j.status ?? 'ok');
+            ok = true;
+            break;
+          }
+        } catch (_) {
+          // ignore
         }
-      })
-      .catch(() => setScenes([]));
+        await new Promise((res) => setTimeout(res, 500));
+      }
+      if (!ok) {
+        setHealth('offline');
+        return;
+      }
+      if (cancelled) return;
+      // Prefer 'vampyre' automatically if it exists
+      try {
+        const projs = await fetch('http://127.0.0.1:8000/storage/projects').then((r) => r.json());
+        if (!cancelled && Array.isArray(projs?.projects) && projs.projects.includes('vampyre') && projectId !== 'vampyre') {
+          localStorage.setItem('projectId', 'vampyre');
+          setProjectId('vampyre');
+          return;
+        }
+      } catch (_) {}
+      // Ensure project exists before listing
+      try {
+        await fetch(`http://127.0.0.1:8000/storage/init-project/${projectId}`, { method: 'POST' });
+      } catch (_) {}
+      // Load global settings on launch
+      try {
+        const s = await fetch('http://127.0.0.1:8000/settings').then((r) => r.json());
+        if (!cancelled) setSettings(s.settings ?? {});
+      } catch (_) {}
+      // Auto-scan media on boot
+      try {
+        await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/scan`, { method: 'POST' });
+      } catch (_) {}
+      // Load scenes for project
+      try {
+        const data = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes`).then((r) => r.json());
+        const list = data.scenes ?? [];
+        if (!cancelled) {
+          setScenes(list);
+          if (!selectedSceneId && list.length > 0) {
+            setSelectedSceneId(list[0].scene_id);
+          }
+        }
+      } catch (_) {
+        if (!cancelled) setScenes([]);
+      }
+      // Load media after scan
+      try {
+        const m = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`).then((r) => r.json());
+        if (!cancelled) setMedia(m.media ?? []);
+      } catch (_) {}
+    }
+    boot();
+    return () => {
+      cancelled = true;
+    };
   }, [projectId]);
 
   useEffect(() => {
@@ -538,6 +587,7 @@ export default function App() {
                           Use previous shot's last frame as start
                         </label>
                         {vxImageMode === 'start_end' ? (
+                        <>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="block text-xs text-neutral-400 mb-1">Start frame (image)</label>
@@ -633,6 +683,7 @@ export default function App() {
                             ) : null}
                           </div>
                         </div>
+                        </>
                         ) : null}
                         <div>
                           <label className="block text-xs text-neutral-400 mb-1">Reference images (mutually exclusive with start/end)</label>

@@ -82,10 +82,16 @@ def generate_shot(req: ShotGenerateRequest):
             if (req.start_frame_path or req.end_frame_path) and (req.reference_images and len(req.reference_images) > 0):
                 raise RuntimeError("Vertex: start/end frame cannot be combined with reference images.")
             client_v = VertexClient(credentials_path=cred, project_id=pid, location=loc, model=req.model or "veo-3.1-generate-preview", temp_bucket=temp_bucket)
+            # If only one of start/end is provided, avoid Vertex interpolation error by sending neither.
+            start_img = req.start_frame_path or req.reference_frame
+            end_img = req.end_frame_path
+            if bool(start_img) ^ bool(end_img):
+                start_img = None
+                end_img = None
             output_url = client_v.generate_video(
                 prompt=req.prompt,
-                first_frame_image=req.start_frame_path or req.reference_frame,
-                last_frame_image=req.end_frame_path,
+                first_frame_image=start_img,
+                last_frame_image=end_img,
                 reference_images=req.reference_images or None,
                 duration=req.duration or 8,
                 resolution=req.resolution or "1080p",
