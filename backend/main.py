@@ -765,6 +765,7 @@ class OpticalFlowRequest(BaseModel):
     shot_a_id: str
     shot_b_id: str
     transition_frames: Optional[int] = 15
+    replace_shots: Optional[bool] = True  # Replace the two shots with merged one
 
 
 @app.post("/video/optical-flow")
@@ -805,8 +806,17 @@ async def api_optical_flow(req: OpticalFlowRequest):
     try:
         optical_flow_smooth(path_a, path_b, str(output_path), req.transition_frames)
         
+        # Extract first and last frames for the merged shot
+        from backend.video.ffmpeg import extract_first_last_frames
+        merged_first = dirs["shots"] / f"{output_filename}_first.png"
+        merged_last = dirs["shots"] / f"{output_filename}_last.png"
+        extract_first_last_frames(str(output_path), str(merged_first), str(merged_last))
+        
         # Save to media library
         rel_path = f"project_data/{req.project_id}/scenes/{req.scene_id}/shots/{output_filename}"
+        rel_first = f"project_data/{req.project_id}/scenes/{req.scene_id}/shots/{merged_first.name}"
+        rel_last = f"project_data/{req.project_id}/scenes/{req.scene_id}/shots/{merged_last.name}"
+        
         media_entry = {
             "id": output_filename,
             "type": "video",
@@ -815,12 +825,66 @@ async def api_optical_flow(req: OpticalFlowRequest):
         }
         add_media(req.project_id, media_entry)
         
+        # If replace_shots is True, replace the two shots with the merged one
+        if req.replace_shots:
+            # Get combined duration
+            duration_a = shot_a.get("duration", 8)
+            duration_b = shot_b.get("duration", 8)
+            combined_duration = duration_a + duration_b + (req.transition_frames / 24)
+            
+            # Create merged shot metadata
+            merged_shot = {
+                "shot_id": f"{req.shot_a_id}_merged_{req.shot_b_id}",
+                "prompt": f"Merged: {shot_a.get('prompt', '')} → {shot_b.get('prompt', '')}",
+                "model": "optical_flow_merge",
+                "provider": "ffmpeg",
+                "duration": int(combined_duration),
+                "file_path": rel_path,
+                "first_frame_path": rel_first,
+                "last_frame_path": rel_last,
+            }
+            
+            # Update scene: remove shot_a and shot_b, insert merged shot at shot_a's position
+            meta_path = PROJECT_DATA_DIR / req.project_id / "metadata.json"
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            for s in data.get("scenes", []):
+                if s.get("scene_id") == req.scene_id:
+                    shots_list = s.get("shots", [])
+                    # Find indices
+                    idx_a = next((i for i, sh in enumerate(shots_list) if sh["shot_id"] == req.shot_a_id), -1)
+                    idx_b = next((i for i, sh in enumerate(shots_list) if sh["shot_id"] == req.shot_b_id), -1)
+                    
+                    if idx_a != -1 and idx_b != -1:
+                        # Remove both shots
+                        if idx_a < idx_b:
+                            shots_list.pop(idx_b)
+                            shots_list.pop(idx_a)
+                            insert_idx = idx_a
+                        else:
+                            shots_list.pop(idx_a)
+                            shots_list.pop(idx_b)
+                            insert_idx = idx_b
+                        
+                        # Insert merged shot
+                        shots_list.insert(insert_idx, merged_shot)
+                        s["shots"] = shots_list
+                    
+                    break
+            
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        
         return {
             "status": "ok",
             "file_path": rel_path,
-            "file_url": media_entry["url"]
+            "file_url": media_entry["url"],
+            "replaced": req.replace_shots
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "detail": str(e)}
 
 

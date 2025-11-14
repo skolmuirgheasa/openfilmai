@@ -2059,7 +2059,7 @@ export default function App() {
                             className="button text-[8px] px-1 py-0.5 bg-violet-500/20 hover:bg-violet-500/30"
                             onClick={async () => {
                               const jobId = `optical_${Date.now()}`;
-                              setJobs(prev => [...prev, { id: jobId, label: `Smoothing ${sh.shot_id}→${nextShot.shot_id}`, status: 'running' }]);
+                              setJobs(prev => [...prev, { id: jobId, label: `Merging clips with smooth transition...`, status: 'running' }]);
                               try {
                                 const res = await fetch('http://127.0.0.1:8000/video/optical-flow', {
                                   method: 'POST',
@@ -2069,14 +2069,23 @@ export default function App() {
                                     scene_id: selectedSceneId,
                                     shot_a_id: sh.shot_id,
                                     shot_b_id: nextShot.shot_id,
-                                    transition_frames: 15
+                                    transition_frames: 15,
+                                    replace_shots: true
                                   })
                                 });
                                 const data = await res.json();
                                 if (data.status === 'ok') {
                                   await refreshMedia();
+                                  // Refresh scene to show merged shot
+                                  const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
+                                  setSceneDetail(d.scene ?? null);
                                   setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'done' } : j));
-                                  alert('Smooth transition created! Check media library.');
+                                  // Clear continuity settings for this pair since they're now merged
+                                  setContinuitySettings(prev => {
+                                    const newSettings = { ...prev };
+                                    delete newSettings[contKey!];
+                                    return newSettings;
+                                  });
                                 } else {
                                   setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'error', detail: data.detail } : j));
                                   alert(`Error: ${data.detail}`);
@@ -2093,9 +2102,80 @@ export default function App() {
                       </div>
                     </div>
                   ) : null}
-                  </>
+                  </React.Fragment>
                 );
               })}
+              
+              {/* Frame Planning Card - appears after last shot */}
+              {(sceneDetail?.shots || []).length > 0 ? (
+                <div className="flex-shrink-0 w-[400px] rounded-lg border-2 border-dashed border-neutral-700 bg-neutral-900/30 p-3">
+                  <div className="text-[10px] text-neutral-500 uppercase tracking-wide mb-2 text-center">Plan Next Shot</div>
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    {/* Start Frame */}
+                    <div className="space-y-1">
+                      <div className="text-[9px] text-neutral-600 text-center">Start Frame</div>
+                      <div className="aspect-video bg-black/40 rounded border border-neutral-800 flex items-center justify-center text-[8px] text-neutral-600">
+                        {vxUsePrevLast ? (
+                          <div className="text-center">
+                            <div className="text-violet-400">✓ Last frame</div>
+                            <div>from prev</div>
+                          </div>
+                        ) : vxStartImageId ? (
+                          <img 
+                            src={`http://127.0.0.1:8000/files/${media.find(m => m.id === vxStartImageId)?.path?.replace('project_data/', '')}`}
+                            className="w-full h-full object-cover rounded"
+                            alt="Start"
+                          />
+                        ) : (
+                          'None'
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* Video Generation */}
+                    <div className="space-y-1">
+                      <div className="text-[9px] text-neutral-600 text-center">Video</div>
+                      <div className="aspect-video bg-gradient-to-br from-violet-500/10 to-purple-500/10 rounded border border-violet-500/30 flex items-center justify-center">
+                        <Video className="w-6 h-6 text-violet-400/50" />
+                      </div>
+                    </div>
+                    
+                    {/* End Frame */}
+                    <div className="space-y-1">
+                      <div className="text-[9px] text-neutral-600 text-center">End Frame</div>
+                      <div className="aspect-video bg-black/40 rounded border border-neutral-800 flex items-center justify-center text-[8px] text-neutral-600">
+                        {vxEndImageId ? (
+                          <img 
+                            src={`http://127.0.0.1:8000/files/${media.find(m => m.id === vxEndImageId)?.path?.replace('project_data/', '')}`}
+                            className="w-full h-full object-cover rounded"
+                            alt="End"
+                          />
+                        ) : (
+                          'Optional'
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <button
+                    className="button text-[10px] w-full bg-violet-500/20 hover:bg-violet-500/30 text-violet-300"
+                    onClick={() => {
+                      // Auto-configure for continuity from last shot
+                      setIsContPrevFrame(true);
+                      setVxImageMode('start_end');
+                      setVxUsePrevLast(true);
+                      setVxStartImageId(null);
+                      setVxStartFromVideoId(null);
+                      setVxStartFramePath(null);
+                      setVxEndImageId(null);
+                      setIsGenOpen(true);
+                    }}
+                  >
+                    Generate Next Shot →
+                  </button>
+                </div>
+              ) : null}
+              
               {(sceneDetail?.shots || []).length === 0 ? (
                 <div className="flex-1 grid place-items-center text-neutral-600 text-xs">
                   No shots yet. Click "Generate Shot" above to start.
