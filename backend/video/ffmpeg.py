@@ -94,19 +94,15 @@ def optical_flow_smooth(input_a: str, input_b: str, output_path: str, transition
         if probe_duration.returncode != 0 or not probe_duration.stdout.strip():
             raise RuntimeError(f"Failed to get duration of video A: {probe_duration.stderr}")
         
-        duration_a = float(probe_duration.stdout.strip())
-        transition_duration = transition_frames / 24
-        offset = duration_a - transition_duration
-        
-        # Apply motion-compensated interpolation + crossfade for seamless blending
-        # This creates intermediate frames using optical flow, eliminating visual jerks
+        # Apply motion-compensated interpolation for seamless blending
+        # NO FADE - clips should be identical at junction point
         # Step 1: Interpolate both clips to 48fps using motion compensation
         # Step 2: Downsample back to 24fps for smooth motion
-        # Step 3: Apply crossfade transition
+        # Step 3: Direct concatenation (no crossfade)
         filter_complex = (
             f"[0:v]minterpolate=fps=48:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,fps=24[interpA];"
             f"[1:v]minterpolate=fps=48:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,fps=24[interpB];"
-            f"[interpA][interpB]xfade=transition=fade:duration={transition_duration}:offset={offset}[outv]"
+            f"[interpA][interpB]concat=n=2:v=1:a=0[outv]"
         )
         
         result = subprocess.run([

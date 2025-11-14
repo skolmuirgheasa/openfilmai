@@ -8,6 +8,9 @@ from pathlib import Path
 import json
 import shutil
 from urllib.parse import urlparse
+import threading
+import time
+import uuid
 from backend.storage.files import (
     list_scenes,
     add_scene,
@@ -37,6 +40,10 @@ app = FastAPI(title="OpenFilmAI Backend", version="0.1.0")
 PROJECT_DATA_DIR = Path("project_data")
 PROJECT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# In-memory job queue for long-running tasks
+background_jobs: Dict[str, Dict] = {}
+jobs_lock = threading.Lock()
+
 # Serve project_data files (videos, frames) under /files/*
 app.mount("/files", StaticFiles(directory=str(PROJECT_DATA_DIR)), name="files")
 # CORS for Electron dev served via Vite
@@ -55,6 +62,46 @@ app.add_middleware(
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok"}
+
+
+# Job queue helpers
+def create_job(job_type: str, **kwargs) -> str:
+    """Create a new background job and return its ID"""
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        background_jobs[job_id] = {
+            "id": job_id,
+            "type": job_type,
+            "status": "running",
+            "progress": 0,
+            "result": None,
+            "error": None,
+            "created_at": time.time(),
+            **kwargs
+        }
+    return job_id
+
+
+def update_job(job_id: str, **kwargs):
+    """Update a job's status"""
+    with jobs_lock:
+        if job_id in background_jobs:
+            background_jobs[job_id].update(kwargs)
+
+
+def get_job(job_id: str) -> Optional[Dict]:
+    """Get a job's current status"""
+    with jobs_lock:
+        return background_jobs.get(job_id)
+
+
+@app.get("/jobs/{job_id}")
+def get_job_status(job_id: str):
+    """Get the status of a background job"""
+    job = get_job(job_id)
+    if not job:
+        return {"status": "not_found"}
+    return job
 
 
 def _slugify(name: str) -> str:
@@ -320,9 +367,10 @@ def _save_video_to_media(project_id: str, tmp_path: str, desired_name: Optional[
     return item
 
 
-@app.post("/ai/lipsync/image")
-def lipsync_image(req: LipSyncImageRequest):
+def _run_lipsync_image_job(job_id: str, req: LipSyncImageRequest):
+    """Background worker for image lip-sync"""
     try:
+        update_job(job_id, status="running", progress=10, message="Initializing WaveSpeed...")
         prov = _wavespeed_provider()
         img = Path(req.image_path)
         aud = Path(req.audio_wav_path)
@@ -330,16 +378,22 @@ def lipsync_image(req: LipSyncImageRequest):
             img = Path.cwd() / req.image_path
         if not aud.is_absolute():
             aud = Path.cwd() / req.audio_wav_path
+        
+        update_job(job_id, progress=20, message="Uploading to WaveSpeed (may take 5-30 min)...")
         tmp = prov.generate(prompt=req.prompt or "", image_path=str(img), audio_path=str(aud))
+        
+        update_job(job_id, progress=90, message="Saving result...")
         item = _save_video_to_media(req.project_id, tmp, req.filename)
-        return {"status": "ok", "item": item, "file_url": item["url"]}
+        
+        update_job(job_id, status="completed", progress=100, result=item, message="Lip-sync complete!")
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        update_job(job_id, status="failed", error=str(e), message=f"Error: {str(e)}")
 
 
-@app.post("/ai/lipsync/video")
-def lipsync_video(req: LipSyncVideoRequest):
+def _run_lipsync_video_job(job_id: str, req: LipSyncVideoRequest):
+    """Background worker for video lip-sync"""
     try:
+        update_job(job_id, status="running", progress=10, message="Initializing WaveSpeed...")
         prov = _wavespeed_provider()
         vid = Path(req.video_path)
         aud = Path(req.audio_wav_path)
@@ -347,11 +401,34 @@ def lipsync_video(req: LipSyncVideoRequest):
             vid = Path.cwd() / req.video_path
         if not aud.is_absolute():
             aud = Path.cwd() / req.audio_wav_path
+        
+        update_job(job_id, progress=20, message="Uploading to WaveSpeed (may take 5-30 min)...")
         tmp = prov.generate(prompt=req.prompt or "", video_path=str(vid), audio_path=str(aud))
+        
+        update_job(job_id, progress=90, message="Saving result...")
         item = _save_video_to_media(req.project_id, tmp, req.filename)
-        return {"status": "ok", "item": item, "file_url": item["url"]}
+        
+        update_job(job_id, status="completed", progress=100, result=item, message="Lip-sync complete!")
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
+        update_job(job_id, status="failed", error=str(e), message=f"Error: {str(e)}")
+
+
+@app.post("/ai/lipsync/image")
+def lipsync_image(req: LipSyncImageRequest):
+    """Start image lip-sync job in background"""
+    job_id = create_job("lipsync_image", project_id=req.project_id, filename=req.filename)
+    thread = threading.Thread(target=_run_lipsync_image_job, args=(job_id, req), daemon=True)
+    thread.start()
+    return {"status": "ok", "job_id": job_id}
+
+
+@app.post("/ai/lipsync/video")
+def lipsync_video(req: LipSyncVideoRequest):
+    """Start video lip-sync job in background"""
+    job_id = create_job("lipsync_video", project_id=req.project_id, filename=req.filename)
+    thread = threading.Thread(target=_run_lipsync_video_job, args=(job_id, req), daemon=True)
+    thread.start()
+    return {"status": "ok", "job_id": job_id}
 
 
 class SceneRenderRequest(BaseModel):

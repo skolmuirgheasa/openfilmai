@@ -1717,9 +1717,9 @@ export default function App() {
                         className="button-primary"
                         disabled={(lipMode === 'video' ? !lipVideoId : !lipImageId) || !lipAudioId}
                         onClick={async () => {
-                          const jobId = startJob(lipMode === 'video' ? 'Lip-sync video' : 'Lip-sync image');
+                          const jobId = startJob(lipMode === 'video' ? 'Lip-sync video (may take 5-30 min)' : 'Lip-sync image (may take 5-30 min)');
                           try {
-                            const audioItem = media.find((m) => m.id === lipAudioId);
+                            const audioItem = media.find((m) => m.media_id === lipAudioId);
                             if (!audioItem) {
                               finishJob(jobId, 'error', 'Select audio');
                               alert('Select audio file.');
@@ -1727,7 +1727,7 @@ export default function App() {
                             }
                             const body: any = {
                               project_id: projectId,
-                              audio_wav_path: audioItem.path,
+                              audio_wav_path: audioItem.file_path,
                               prompt: lipPrompt || undefined,
                               filename: lipOutputName || undefined
                             };
@@ -1735,30 +1735,36 @@ export default function App() {
                             
                             if (lipMode === 'video') {
                               endpoint = 'http://127.0.0.1:8000/ai/lipsync/video';
-                              const videoItem = media.find((m) => m.id === lipVideoId);
+                              const videoItem = media.find((m) => m.media_id === lipVideoId);
                               if (!videoItem) {
                                 finishJob(jobId, 'error', 'Select video');
                                 alert('Select a video clip.');
                                 return;
                               }
-                              body.video_path = videoItem.path;
+                              body.video_path = videoItem.file_path;
                             } else {
                               endpoint = 'http://127.0.0.1:8000/ai/lipsync/image';
-                              const imageItem = media.find((m) => m.id === lipImageId);
+                              const imageItem = media.find((m) => m.media_id === lipImageId);
                               if (!imageItem) {
                                 finishJob(jobId, 'error', 'Select image');
                                 alert('Select an image.');
                                 return;
                               }
-                              body.image_path = imageItem.path;
+                              body.image_path = imageItem.file_path;
                             }
+                            console.log('Starting lip-sync request:', endpoint, body);
+                            
+                            // Start the background job
                             const r = await fetch(endpoint, {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify(body)
                             });
+                            
                             const d = await r.json();
-                            if (d.status === 'ok') {
+                            console.log('Lip-sync job started:', d);
+                            
+                            if (d.status === 'ok' && d.job_id) {
                               // Save lip-sync prompt to history
                               if (lipPrompt.trim()) {
                                 setLipSyncPromptHistory(prev => {
@@ -1767,13 +1773,43 @@ export default function App() {
                                 });
                                 setLipSyncPromptHistoryIndex(-1);
                               }
-                              await refreshMedia();
                               setIsLipOpen(false);
-                              setCurrentVideoUrl(`http://127.0.0.1:8000${d.file_url}`);
-                              finishJob(jobId, 'done');
+                              
+                              // Poll for job completion in background
+                              const pollInterval = setInterval(async () => {
+                                try {
+                                  const statusRes = await fetch(`http://127.0.0.1:8000/jobs/${d.job_id}`);
+                                  const statusData = await statusRes.json();
+                                  
+                                  if (statusData.status === 'completed') {
+                                    clearInterval(pollInterval);
+                                    await refreshMedia();
+                                    if (statusData.result?.url) {
+                                      setCurrentVideoUrl(`http://127.0.0.1:8000${statusData.result.url}`);
+                                    }
+                                    finishJob(jobId, 'done', statusData.message || 'Lip-sync complete!');
+                                  } else if (statusData.status === 'failed') {
+                                    clearInterval(pollInterval);
+                                    finishJob(jobId, 'error', statusData.error || 'Lip-sync failed');
+                                  } else if (statusData.message) {
+                                    // Update job message with progress
+                                    setJobs(prev => prev.map(j => 
+                                      j.id === jobId ? { ...j, label: statusData.message } : j
+                                    ));
+                                  }
+                                } catch (e) {
+                                  console.error('Error polling job status:', e);
+                                }
+                              }, 5000); // Poll every 5 seconds
+                              
+                              // Timeout after 30 minutes
+                              setTimeout(() => {
+                                clearInterval(pollInterval);
+                                finishJob(jobId, 'error', 'Job timed out after 30 minutes');
+                              }, 1800000); // 30 minutes
                             } else {
-                              alert(d.detail || 'Lip-sync failed');
-                              finishJob(jobId, 'error', d.detail || 'Lip-sync failed');
+                              alert(d.detail || 'Failed to start lip-sync job');
+                              finishJob(jobId, 'error', d.detail || 'Failed to start job');
                             }
                           } catch (e: any) {
                             alert(e?.message || 'Lip-sync error');
@@ -2016,7 +2052,8 @@ export default function App() {
                           onClick={(e) => {
                             e.stopPropagation();
                             // Pre-select this video for lip-sync
-                            const videoId = media.find(m => m.path === sh.file_path)?.id;
+                            const videoId = media.find(m => m.file_path === sh.file_path)?.media_id;
+                            console.log('Lip button clicked for shot:', sh.shot_id, 'file_path:', sh.file_path, 'found videoId:', videoId);
                             if (videoId) {
                               setLipMode('video');
                               setLipVideoId(videoId);
@@ -2312,7 +2349,8 @@ export default function App() {
                     className="button w-full text-xs"
                     onClick={() => {
                       // Pre-select this video for lip-sync
-                      const videoId = media.find(m => m.path === shot.file_path)?.id;
+                      const videoId = media.find(m => m.file_path === shot.file_path)?.media_id;
+                      console.log('Inspector lip-sync button clicked for shot:', shot.shot_id, 'file_path:', shot.file_path, 'found videoId:', videoId);
                       if (videoId) {
                         setLipMode('video');
                         setLipVideoId(videoId);
