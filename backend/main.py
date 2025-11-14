@@ -105,15 +105,31 @@ def generate_shot(req: ShotGenerateRequest):
             # Enforce mutual exclusivity: reference_images vs start/end frames
             if (req.start_frame_path or req.end_frame_path) and (req.reference_images and len(req.reference_images) > 0):
                 raise RuntimeError("Vertex: start/end frame cannot be combined with reference images.")
+            # Vertex frame interpolation requires BOTH start and end frames
+            # If only end frame is provided, reject it
+            if req.end_frame_path and not req.start_frame_path:
+                raise RuntimeError("Vertex: end frame requires a start frame for interpolation. Provide both or only a start frame.")
             client_v = VertexClient(credentials_path=cred, project_id=pid, location=loc, model=req.model or "veo-3.1-fast-generate-preview", temp_bucket=temp_bucket)
             # Allow start-only or end-only; client handles whichever is provided.
+            # Normalize paths (convert project_data/... to absolute paths)
             start_img = req.start_frame_path or req.reference_frame
+            if start_img:
+                start_p = Path(start_img)
+                if not start_p.is_absolute():
+                    start_img = str(Path.cwd() / start_img)
             end_img = req.end_frame_path
+            if end_img:
+                end_p = Path(end_img)
+                if not end_p.is_absolute():
+                    end_img = str(Path.cwd() / end_img)
+            ref_imgs = req.reference_images
+            if ref_imgs:
+                ref_imgs = [str(Path.cwd() / r) if not Path(r).is_absolute() else r for r in ref_imgs]
             output_url = client_v.generate_video(
                 prompt=req.prompt,
                 first_frame_image=start_img,
                 last_frame_image=end_img,
-                reference_images=req.reference_images or None,
+                reference_images=ref_imgs or None,
                 duration=req.duration or 8,
                 resolution=req.resolution or "1080p",
                 aspect_ratio=req.aspect_ratio or "16:9",
@@ -158,6 +174,29 @@ def generate_shot(req: ShotGenerateRequest):
         first = dirs["frames"] / f"{shot_id}_first.png"
         last = dirs["frames"] / f"{shot_id}_last.png"
         extract_first_last_frames(str(video_path), str(first), str(last))
+        
+        # Copy video to media library so it's available for reuse
+        media_video_dir = PROJECT_DATA_DIR / req.project_id / "media" / "video"
+        media_video_dir.mkdir(parents=True, exist_ok=True)
+        media_video_path = media_video_dir / f"{shot_id}.mp4"
+        shutil.copyfile(video_path, media_video_path)
+        
+        # Also copy extracted frames to media/images
+        media_images_dir = PROJECT_DATA_DIR / req.project_id / "media" / "images"
+        media_images_dir.mkdir(parents=True, exist_ok=True)
+        media_first = media_images_dir / f"{shot_id}_first.png"
+        media_last = media_images_dir / f"{shot_id}_last.png"
+        shutil.copyfile(first, media_first)
+        shutil.copyfile(last, media_last)
+        
+        # Add to media library
+        rel_media_video = str(media_video_path.relative_to(PROJECT_DATA_DIR))
+        rel_media_first = str(media_first.relative_to(PROJECT_DATA_DIR))
+        rel_media_last = str(media_last.relative_to(PROJECT_DATA_DIR))
+        add_media(req.project_id, {"id": media_video_path.name, "type": "video", "path": f"project_data/{rel_media_video}", "url": f"/files/{rel_media_video}"})
+        add_media(req.project_id, {"id": media_first.name, "type": "image", "path": f"project_data/{rel_media_first}", "url": f"/files/{rel_media_first}"})
+        add_media(req.project_id, {"id": media_last.name, "type": "image", "path": f"project_data/{rel_media_last}", "url": f"/files/{rel_media_last}"})
+        
         # Update metadata
         rel_from_project = str(video_path.relative_to(PROJECT_DATA_DIR))
         # Static URL under /files maps to project_data dir
@@ -380,6 +419,37 @@ def api_get_scene(project_id: str, scene_id: str):
     if scene is None:
         return {"status": "not_found"}
     return {"scene": scene}
+
+
+class SceneUpdate(BaseModel):
+    title: Optional[str] = None
+    shot_order: Optional[List[str]] = None
+
+
+@app.put("/storage/{project_id}/scenes/{scene_id}")
+def api_update_scene(project_id: str, scene_id: str, body: SceneUpdate):
+    meta_path = PROJECT_DATA_DIR / project_id / "metadata.json"
+    if not meta_path.exists():
+        return {"status": "not_found"}
+    with open(meta_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    for s in data.get("scenes", []):
+        if s.get("scene_id") == scene_id:
+            if body.title is not None:
+                s["title"] = body.title
+            if body.shot_order is not None:
+                # Reorder shots based on shot_order list
+                shots = s.get("shots", [])
+                shot_map = {sh["shot_id"]: sh for sh in shots}
+                reordered = []
+                for shot_id in body.shot_order:
+                    if shot_id in shot_map:
+                        reordered.append(shot_map[shot_id])
+                s["shots"] = reordered
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return {"status": "ok", "scene": s}
+    return {"status": "not_found"}
 
 
 class ShotCreate(BaseModel):
@@ -687,6 +757,71 @@ def api_last_frame(project_id: str, scene_id: str, shot_id: str):
             rel = path.replace("project_data/", "")
             return {"status": "ok", "path": path, "url": f"/files/{rel}"}
     return {"status": "not_found"}
+
+
+class OpticalFlowRequest(BaseModel):
+    project_id: str
+    scene_id: str
+    shot_a_id: str
+    shot_b_id: str
+    transition_frames: Optional[int] = 15
+
+
+@app.post("/video/optical-flow")
+async def api_optical_flow(req: OpticalFlowRequest):
+    """Apply optical flow smoothing between two shots."""
+    from backend.video.ffmpeg import optical_flow_smooth
+    import time
+    
+    scene = get_scene(req.project_id, req.scene_id)
+    if not scene:
+        return {"status": "error", "detail": "Scene not found"}
+    
+    shots = scene.get("shots", [])
+    shot_a = next((s for s in shots if s["shot_id"] == req.shot_a_id), None)
+    shot_b = next((s for s in shots if s["shot_id"] == req.shot_b_id), None)
+    
+    if not shot_a or not shot_b:
+        return {"status": "error", "detail": "Shots not found"}
+    
+    path_a = shot_a.get("file_path")
+    path_b = shot_b.get("file_path")
+    
+    if not path_a or not path_b:
+        return {"status": "error", "detail": "Shot video files not found"}
+    
+    # Convert relative paths to absolute
+    if not Path(path_a).is_absolute():
+        path_a = str(Path.cwd() / path_a)
+    if not Path(path_b).is_absolute():
+        path_b = str(Path.cwd() / path_b)
+    
+    # Create output path
+    dirs = ensure_scene_dirs(req.project_id, req.scene_id)
+    timestamp = int(time.time())
+    output_filename = f"{req.shot_a_id}_to_{req.shot_b_id}_smooth_{timestamp}.mp4"
+    output_path = dirs["shots"] / output_filename
+    
+    try:
+        optical_flow_smooth(path_a, path_b, str(output_path), req.transition_frames)
+        
+        # Save to media library
+        rel_path = f"project_data/{req.project_id}/scenes/{req.scene_id}/shots/{output_filename}"
+        media_entry = {
+            "id": output_filename,
+            "type": "video",
+            "path": rel_path,
+            "url": f"/files/{req.project_id}/scenes/{req.scene_id}/shots/{output_filename}"
+        }
+        add_media(req.project_id, media_entry)
+        
+        return {
+            "status": "ok",
+            "file_path": rel_path,
+            "file_url": media_entry["url"]
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 # Character endpoints
