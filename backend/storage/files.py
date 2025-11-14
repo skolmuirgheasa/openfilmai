@@ -101,4 +101,43 @@ def media_dirs(project_id: str) -> Dict[str, Path]:
     return {"video": video, "audio": audio, "images": images}
 
 
+# Character helpers
+def list_characters(project_id: str) -> List[Dict[str, Any]]:
+    meta = read_metadata(project_id)
+    return meta.get("characters", [])
+
+
+def upsert_character(project_id: str, character: Dict[str, Any]) -> Dict[str, Any]:
+    meta = read_metadata(project_id)
+    chars = meta.get("characters", [])
+    # replace if exists
+    for idx, c in enumerate(chars):
+        if c.get("character_id") == character.get("character_id"):
+            chars[idx] = character
+            break
+    else:
+        chars.append(character)
+    meta["characters"] = chars
+    write_metadata(project_id, meta)
+    return character
+
+
+def get_character(project_id: str, character_id: str) -> Optional[Dict[str, Any]]:
+    for c in list_characters(project_id):
+        if c.get("character_id") == character_id:
+            return c
+    return None
+
+
+def delete_character(project_id: str, character_id: str) -> bool:
+    meta = read_metadata(project_id)
+    chars = meta.get("characters", [])
+    new_chars = [c for c in chars if c.get("character_id") != character_id]
+    if len(new_chars) == len(chars):
+        return False
+    meta["characters"] = new_chars
+    write_metadata(project_id, meta)
+    return True
+
+
 

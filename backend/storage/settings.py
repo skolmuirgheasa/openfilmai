@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 from typing import Dict, Any
+import os
 
 # Global settings path (user home) to persist across projects
 GLOBAL_DIR = Path.home() / ".openfilmai"
@@ -29,10 +30,25 @@ def read_settings() -> Dict[str, Any]:
     if SETTINGS_PATH.exists():
         try:
             with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except Exception:
-            return {}
-    return {}
+            data = {}
+    else:
+        data = {}
+    # Merge environment fallbacks so the UI doesn't appear empty if user has env vars set
+    env_overrides = {
+        "replicate_api_token": os.environ.get("REPLICATE_API_TOKEN") or os.environ.get("REPLICATE_API_KEY"),
+        "elevenlabs_api_key": os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("XI_API_KEY"),
+        "wavespeed_api_key": os.environ.get("WAVESPEED_API_KEY"),
+        "vertex_service_account_path": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
+        "vertex_project_id": os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT"),
+        "vertex_location": os.environ.get("VERTEX_LOCATION"),
+        "vertex_temp_bucket": os.environ.get("VERTEX_TEMP_BUCKET"),
+    }
+    for k, v in env_overrides.items():
+        if v and not data.get(k):
+            data[k] = v
+    return data
 
 
 def write_settings(data: Dict[str, Any]) -> None:

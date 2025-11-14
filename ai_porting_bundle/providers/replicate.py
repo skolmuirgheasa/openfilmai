@@ -6,7 +6,21 @@ Docs: https://replicate.com/docs/reference/http#predictions.create
 import os
 import time
 from .base import AIProvider, AIProviderError
-from classes.logger import log
+try:
+    from classes.logger import log  # type: ignore
+except Exception:
+    import logging
+    _logger = logging.getLogger("openfilmai")
+    _logger.setLevel(logging.INFO)
+    if not _logger.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        _logger.addHandler(_h)
+    class _Log:
+        def info(self, *args, **kwargs): _logger.info(*args, **kwargs)
+        def warning(self, *args, **kwargs): _logger.warning(*args, **kwargs)
+        def error(self, *args, **kwargs): _logger.error(*args, **kwargs)
+    log = _Log()
 
 
 class ReplicateProvider(AIProvider):

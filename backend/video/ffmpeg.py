@@ -33,3 +33,24 @@ def optical_flow_smooth(input_a: str, input_b: str, output_path: str) -> str:
     return output_path
 
 
+def strip_audio(input_video: str) -> None:
+    tmp = Path(input_video).with_suffix(".noaudio.tmp.mp4")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_video),
+            "-c",
+            "copy",
+            "-an",
+            str(tmp),
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if tmp.exists():
+        tmp.replace(input_video)
+
+

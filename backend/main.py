@@ -2,9 +2,12 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
+import re
 from pathlib import Path
 import json
+import shutil
+from urllib.parse import urlparse
 from backend.storage.files import (
     list_scenes,
     add_scene,
@@ -18,9 +21,15 @@ from backend.storage.files import (
     ensure_project,
     read_metadata,
     write_metadata,
+    list_characters,
+    upsert_character,
+    get_character,
+    delete_character,
 )
 from backend.ai.replicate_client import ReplicateClient
 from backend.ai.vertex_client import VertexClient
+from ai_porting_bundle.providers.elevenlabs import ElevenLabsProvider
+from ai_porting_bundle.providers.wavespeed import WaveSpeedProvider
 from backend.storage.settings import read_settings, write_settings
 
 app = FastAPI(title="OpenFilmAI Backend", version="0.1.0")
@@ -43,9 +52,23 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok"}
+
+
+def _slugify(name: str) -> str:
+    name = name.strip().lower()
+    name = re.sub(r"[^a-z0-9]+", "-", name)
+    name = re.sub(r"-{2,}", "-", name).strip("-")
+    return name or "asset"
+
+
+def _safe_filename(desired: Optional[str], fallback_stub: str, ext: str) -> str:
+    base = _slugify(desired) if desired else fallback_stub
+    if not base.endswith(ext):
+        base = f"{base}{ext}"
+    return base
 
 
 class ShotGenerateRequest(BaseModel):
@@ -62,6 +85,7 @@ class ShotGenerateRequest(BaseModel):
     start_frame_path: Optional[str] = None
     end_frame_path: Optional[str] = None
     reference_images: Optional[List[str]] = None
+    generate_audio: Optional[bool] = False
 
 
 @app.post("/ai/generate-shot")
@@ -81,13 +105,10 @@ def generate_shot(req: ShotGenerateRequest):
             # Enforce mutual exclusivity: reference_images vs start/end frames
             if (req.start_frame_path or req.end_frame_path) and (req.reference_images and len(req.reference_images) > 0):
                 raise RuntimeError("Vertex: start/end frame cannot be combined with reference images.")
-            client_v = VertexClient(credentials_path=cred, project_id=pid, location=loc, model=req.model or "veo-3.1-generate-preview", temp_bucket=temp_bucket)
-            # If only one of start/end is provided, avoid Vertex interpolation error by sending neither.
+            client_v = VertexClient(credentials_path=cred, project_id=pid, location=loc, model=req.model or "veo-3.1-fast-generate-preview", temp_bucket=temp_bucket)
+            # Allow start-only or end-only; client handles whichever is provided.
             start_img = req.start_frame_path or req.reference_frame
             end_img = req.end_frame_path
-            if bool(start_img) ^ bool(end_img):
-                start_img = None
-                end_img = None
             output_url = client_v.generate_video(
                 prompt=req.prompt,
                 first_frame_image=start_img,
@@ -96,11 +117,13 @@ def generate_shot(req: ShotGenerateRequest):
                 duration=req.duration or 8,
                 resolution=req.resolution or "1080p",
                 aspect_ratio=req.aspect_ratio or "16:9",
+                generate_audio=bool(req.generate_audio),
             )
-            model_used = req.model or "veo-3.1-generate-preview"
+            model_used = req.model or "veo-3.1-fast-generate-preview"
         else:
             # Default to Replicate
-            client_r = ReplicateClient()
+            s = read_settings()
+            client_r = ReplicateClient(api_token=s.get("replicate_api_token"))
             model_used = req.model or "google/veo-3.1"
             output_url = client_r.generate_video(
                 model=model_used,
@@ -109,26 +132,35 @@ def generate_shot(req: ShotGenerateRequest):
                 duration=req.duration or 8,
                 resolution=req.resolution or "1080p",
                 aspect_ratio=req.aspect_ratio or "16:9",
-                generate_audio=True,
+                generate_audio=bool(req.generate_audio),
             )
         # Download file
         import requests, os
         video_path = dirs["shots"] / f"{shot_id}.mp4"
-        with requests.get(output_url, stream=True, timeout=120) as r:
-            r.raise_for_status()
-            with open(video_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-        # Extract frames
-        from backend.video.ffmpeg import extract_first_last_frames
+        parsed = urlparse(str(output_url))
+        if parsed.scheme in ("http", "https"):
+            with requests.get(output_url, stream=True, timeout=120) as r:
+                r.raise_for_status()
+                with open(video_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+        else:
+            # Treat as local filesystem path produced by client; move/copy into scene shots folder.
+            src = Path(str(output_url))
+            if not src.exists():
+                raise RuntimeError(f"Vertex output not found: {src}")
+            shutil.copyfile(src, video_path)
+        # Extract frames & strip audio if disabled
+        from backend.video.ffmpeg import extract_first_last_frames, strip_audio
+        if not req.generate_audio:
+            strip_audio(str(video_path))
         first = dirs["frames"] / f"{shot_id}_first.png"
         last = dirs["frames"] / f"{shot_id}_last.png"
         extract_first_last_frames(str(video_path), str(first), str(last))
         # Update metadata
-        rel_video = str(video_path.relative_to(Path.cwd()))
-        # Static URL under /files maps to project_data dir
         rel_from_project = str(video_path.relative_to(PROJECT_DATA_DIR))
+        # Static URL under /files maps to project_data dir
         video_url = f"/files/{rel_from_project}"
         rel_first = str(first.relative_to(PROJECT_DATA_DIR))
         rel_last = str(last.relative_to(PROJECT_DATA_DIR))
@@ -137,7 +169,7 @@ def generate_shot(req: ShotGenerateRequest):
             "prompt": req.prompt,
             "model": model_used,
             "duration": req.duration,
-            "file_path": rel_video,
+            "file_path": f"project_data/{rel_from_project}",
             "first_frame_path": f"project_data/{rel_first}",
             "last_frame_path": f"project_data/{rel_last}",
             "continuity_source": None,
@@ -148,29 +180,139 @@ def generate_shot(req: ShotGenerateRequest):
         return {"status": "error", "detail": str(e)}
 
 
-class VoiceRequest(BaseModel):
+class VoiceTTSRequest(BaseModel):
     project_id: str
-    text: Optional[str] = None
-    source_wav: Optional[str] = None
+    text: str
     voice_id: Optional[str] = None
+    model_id: Optional[str] = None
+    filename: Optional[str] = None
 
 
-@app.post("/ai/generate-voice")
-def generate_voice(req: VoiceRequest):
-    # Stub: ElevenLabs integration pending
-    return {"status": "not_implemented", "detail": "ElevenLabs integration pending"}
+@app.post("/ai/voice/tts")
+def voice_tts(req: VoiceTTSRequest):
+    s = read_settings()
+    key = s.get("elevenlabs_api_key")
+    if not key:
+        return {"status": "error", "detail": "ElevenLabs API key not set in Settings"}
+    prov = ElevenLabsProvider(api_key=key)
+    try:
+        out = prov.generate(text=req.text, voice_id=req.voice_id, model_id=req.model_id or None, output_format="mp3")
+        # Save to project audio folder and index
+        proj_audio = ensure_scene_dirs(req.project_id, "tmp")["audio"].parent.parent / "media" / "audio"
+        proj_audio.mkdir(parents=True, exist_ok=True)
+        stub = f"voice_{int(__import__('time').time())}"
+        filename = _safe_filename(req.filename, stub, ".mp3")
+        target = proj_audio / filename
+        Path(out).rename(target)
+        rel = str(target.relative_to(PROJECT_DATA_DIR))
+        item = {"id": target.name, "type": "audio", "path": f"project_data/{rel}", "url": f"/files/{rel}"}
+        add_media(req.project_id, item)
+        return {"status": "ok", "file_url": f"/files/{rel}", "item": item}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
-class LipSyncRequest(BaseModel):
+class VoiceV2VRequest(BaseModel):
     project_id: str
-    image_or_video_path: str
+    source_wav: str
+    voice_id: Optional[str] = None
+    model_id: Optional[str] = "eleven_multilingual_sts_v2"
+    filename: Optional[str] = None
+
+
+@app.post("/ai/voice/v2v")
+def voice_v2v(req: VoiceV2VRequest):
+    s = read_settings()
+    key = s.get("elevenlabs_api_key")
+    if not key:
+        return {"status": "error", "detail": "ElevenLabs API key not set in Settings"}
+    prov = ElevenLabsProvider(api_key=key)
+    try:
+        src = Path(req.source_wav)
+        if not src.is_absolute():
+            src = Path.cwd() / req.source_wav
+        out = prov.speech_to_speech(audio_path=str(src), voice_id=req.voice_id or None, model_id=req.model_id or "eleven_multilingual_sts_v2", output_format="mp3")
+        proj_audio = ensure_scene_dirs(req.project_id, "tmp")["audio"].parent.parent / "media" / "audio"
+        proj_audio.mkdir(parents=True, exist_ok=True)
+        stub = f"voice_v2v_{int(__import__('time').time())}"
+        target = proj_audio / _safe_filename(req.filename, stub, ".mp3")
+        Path(out).rename(target)
+        rel = str(target.relative_to(PROJECT_DATA_DIR))
+        item = {"id": target.name, "type": "audio", "path": f"project_data/{rel}", "url": f"/files/{rel}"}
+        add_media(req.project_id, item)
+        return {"status": "ok", "file_url": f"/files/{rel}", "item": item}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+class LipSyncImageRequest(BaseModel):
+    project_id: str
+    image_path: str
     audio_wav_path: str
+    prompt: Optional[str] = None
+    filename: Optional[str] = None
 
 
-@app.post("/ai/lip-sync")
-def lip_sync(req: LipSyncRequest):
-    # Stub: Wavespeed integration pending
-    return {"status": "not_implemented", "detail": "Wavespeed integration pending"}
+class LipSyncVideoRequest(BaseModel):
+    project_id: str
+    video_path: str
+    audio_wav_path: str
+    prompt: Optional[str] = None
+    filename: Optional[str] = None
+
+
+def _wavespeed_provider():
+    s = read_settings()
+    key = s.get("wavespeed_api_key")
+    if not key:
+        raise RuntimeError("Wavespeed API key not set in Settings")
+    return WaveSpeedProvider(api_key=key)
+
+
+def _save_video_to_media(project_id: str, tmp_path: str, desired_name: Optional[str] = None) -> Dict[str, str]:
+    proj_video = PROJECT_DATA_DIR / project_id / "media" / "video"
+    proj_video.mkdir(parents=True, exist_ok=True)
+    stub = f"wavespeed_{int(__import__('time').time())}"
+    target = proj_video / _safe_filename(desired_name, stub, ".mp4")
+    Path(tmp_path).rename(target)
+    rel = str(target.relative_to(PROJECT_DATA_DIR))
+    item = {"id": target.name, "type": "video", "path": f"project_data/{rel}", "url": f"/files/{rel}"}
+    add_media(project_id, item)
+    return item
+
+
+@app.post("/ai/lipsync/image")
+def lipsync_image(req: LipSyncImageRequest):
+    try:
+        prov = _wavespeed_provider()
+        img = Path(req.image_path)
+        aud = Path(req.audio_wav_path)
+        if not img.is_absolute():
+            img = Path.cwd() / req.image_path
+        if not aud.is_absolute():
+            aud = Path.cwd() / req.audio_wav_path
+        tmp = prov.generate(prompt=req.prompt or "", image_path=str(img), audio_path=str(aud))
+        item = _save_video_to_media(req.project_id, tmp, req.filename)
+        return {"status": "ok", "item": item, "file_url": item["url"]}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@app.post("/ai/lipsync/video")
+def lipsync_video(req: LipSyncVideoRequest):
+    try:
+        prov = _wavespeed_provider()
+        vid = Path(req.video_path)
+        aud = Path(req.audio_wav_path)
+        if not vid.is_absolute():
+            vid = Path.cwd() / req.video_path
+        if not aud.is_absolute():
+            aud = Path.cwd() / req.audio_wav_path
+        tmp = prov.generate(prompt=req.prompt or "", video_path=str(vid), audio_path=str(aud))
+        item = _save_video_to_media(req.project_id, tmp, req.filename)
+        return {"status": "ok", "item": item, "file_url": item["url"]}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 class SceneRenderRequest(BaseModel):
@@ -201,15 +343,17 @@ def init_project(project_id: str):
     media_dir = proj_dir / "media"
     proj_dir.mkdir(parents=True, exist_ok=True)
     media_dir.mkdir(parents=True, exist_ok=True)
-    meta = {
-        "project_id": project_id,
-        "scenes": [],
-        "shots": [],
-        "characters": [],
-        "media": []
-    }
-    with open(proj_dir / "metadata.json", "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    meta_path = proj_dir / "metadata.json"
+    if not meta_path.exists():
+        meta = {
+            "project_id": project_id,
+            "scenes": [],
+            "shots": [],
+            "characters": [],
+            "media": []
+        }
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
     return {"status": "ok", "project_dir": str(proj_dir)}
 
 
@@ -269,7 +413,21 @@ def api_add_shot(project_id: str, scene_id: str, body: ShotCreate):
 # Media upload/list
 @app.get("/storage/{project_id}/media")
 def api_list_media(project_id: str):
-    return {"media": list_media(project_id)}
+    # Auto-scan if metadata is empty but files exist on disk
+    items = list_media(project_id)
+    try:
+        proj_dir = PROJECT_DATA_DIR / project_id
+        media_dir = proj_dir / "media"
+        video_dir = media_dir / "video"
+        audio_dir = media_dir / "audio"
+        images_dir = media_dir / "images"
+        has_files = any(video_dir.glob("*")) or any(audio_dir.glob("*")) or any(images_dir.glob("*"))
+        if (not items) and has_files:
+            api_scan_media(project_id)
+            items = list_media(project_id)
+    except Exception:
+        pass
+    return {"media": items}
 
 
 @app.post("/storage/{project_id}/media")
@@ -529,3 +687,47 @@ def api_last_frame(project_id: str, scene_id: str, shot_id: str):
             rel = path.replace("project_data/", "")
             return {"status": "ok", "path": path, "url": f"/files/{rel}"}
     return {"status": "not_found"}
+
+
+# Character endpoints
+class CharacterBody(BaseModel):
+    character_id: str
+    name: str
+    voice_id: Optional[str] = None
+    style_tokens: Optional[str] = None
+    reference_image_ids: Optional[List[str]] = None
+
+
+class CharacterUpdate(BaseModel):
+    name: Optional[str] = None
+    voice_id: Optional[str] = None
+    style_tokens: Optional[str] = None
+    reference_image_ids: Optional[List[str]] = None
+
+
+@app.get("/storage/{project_id}/characters")
+def api_list_characters(project_id: str):
+    return {"characters": list_characters(project_id)}
+
+
+@app.post("/storage/{project_id}/characters")
+def api_upsert_character(project_id: str, body: CharacterBody):
+    payload = body.model_dump()
+    upsert_character(project_id, payload)
+    return {"status": "ok", "character": payload}
+
+
+@app.put("/storage/{project_id}/characters/{character_id}")
+def api_update_character(project_id: str, character_id: str, body: CharacterUpdate):
+    existing = get_character(project_id, character_id)
+    if not existing:
+        return {"status": "not_found"}
+    existing.update(body.model_dump(exclude_none=True))
+    upsert_character(project_id, existing)
+    return {"status": "ok", "character": existing}
+
+
+@app.delete("/storage/{project_id}/characters/{character_id}")
+def api_delete_character(project_id: str, character_id: str):
+    deleted = delete_character(project_id, character_id)
+    return {"status": "ok", "deleted": deleted}

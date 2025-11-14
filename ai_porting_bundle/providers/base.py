@@ -1,6 +1,22 @@
 import os
 import requests
-from classes.logger import log
+try:
+    # Optional external logger used in original project
+    from classes.logger import log  # type: ignore
+except Exception:
+    # Minimal fallback logger
+    import logging
+    _logger = logging.getLogger("openfilmai")
+    _logger.setLevel(logging.INFO)
+    if not _logger.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        _logger.addHandler(_h)
+    class _Log:
+        def info(self, *args, **kwargs): _logger.info(*args, **kwargs)
+        def warning(self, *args, **kwargs): _logger.warning(*args, **kwargs)
+        def error(self, *args, **kwargs): _logger.error(*args, **kwargs)
+    log = _Log()
 
 
 class AIProviderError(Exception):

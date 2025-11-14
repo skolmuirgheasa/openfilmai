@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Plus, FolderOpen, Sparkles, Settings2, Video, Play } from 'lucide-react';
-import { useEffect as ReactUseEffect, useRef as ReactUseRef } from 'react';
 
 type Health = { status: string };
+type Character = {
+  character_id: string;
+  name: string;
+  voice_id?: string;
+  style_tokens?: string;
+  reference_image_ids?: string[];
+};
+
+type Job = { id: string; label: string; status: 'running' | 'done' | 'error'; detail?: string };
 
 export default function App() {
   const [health, setHealth] = useState<string>('checking…');
@@ -16,6 +24,25 @@ export default function App() {
   const [sceneDetail, setSceneDetail] = useState<any | null>(null);
   const [isGenOpen, setIsGenOpen] = useState<boolean>(false);
   const [genPrompt, setGenPrompt] = useState<string>('a cinematic shot of waves at sunset');
+  const [genAudio, setGenAudio] = useState<boolean>(false);
+  const [isVoiceOpen, setIsVoiceOpen] = useState<boolean>(false);
+  const [voiceText, setVoiceText] = useState<string>('');
+  const [voiceId, setVoiceId] = useState<string>('');
+  const [voiceMode, setVoiceMode] = useState<'tts' | 'v2v'>('tts');
+  const [voiceCharacterId, setVoiceCharacterId] = useState<string>('');
+  const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
+  const recordingRef = useRef<MediaRecorder | null>(null);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
+  const [recordedMediaPath, setRecordedMediaPath] = useState<string | null>(null);
+  const [voiceOutputName, setVoiceOutputName] = useState<string>('');
+  const [isLipOpen, setIsLipOpen] = useState<boolean>(false);
+  const [lipMode, setLipMode] = useState<'video' | 'image'>('video');
+  const [lipVideoId, setLipVideoId] = useState<string | null>(null);
+  const [lipImageId, setLipImageId] = useState<string | null>(null);
+  const [lipAudioId, setLipAudioId] = useState<string | null>(null);
+  const [lipPrompt, setLipPrompt] = useState<string>('');
+  const [lipOutputName, setLipOutputName] = useState<string>('');
   const [currentVideoUrl, setCurrentVideoUrl] = useState<string | null>(null);
   const [currentImageUrl, setCurrentImageUrl] = useState<string | null>(null);
   const [media, setMedia] = useState<any[]>([]);
@@ -28,16 +55,31 @@ export default function App() {
   const [nowPlaying, setNowPlaying] = useState<string>('');
   const [playError, setPlayError] = useState<string>('');
   const [headInfo, setHeadInfo] = useState<{ status?: number; type?: string; length?: string }>({});
-  const videoRef = ReactUseRef<HTMLVideoElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
+  const [isCharacterModalOpen, setIsCharacterModalOpen] = useState<boolean>(false);
+  const [editingCharacter, setEditingCharacter] = useState<Character | null>(null);
+  const [newCharacterName, setNewCharacterName] = useState<string>('New Character');
+  const [newCharacterVoice, setNewCharacterVoice] = useState<string>('');
+  const [newCharacterStyle, setNewCharacterStyle] = useState<string>('');
+  const [newCharacterImages, setNewCharacterImages] = useState<string[]>([]);
   // Vertex inputs and generation state
   const [vxUsePrevLast, setVxUsePrevLast] = useState<boolean>(false);
   const [vxStartImageId, setVxStartImageId] = useState<string | null>(null);
   const [vxEndImageId, setVxEndImageId] = useState<string | null>(null);
   const [vxRefImageIds, setVxRefImageIds] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [vxStartFromVideoId, setVxStartFromVideoId] = useState<string | null>(null);
+  const [vxStartFramePath, setVxStartFramePath] = useState<string | null>(null);
   const [vxEndFromVideoId, setVxEndFromVideoId] = useState<string | null>(null);
   const [vxEndFramePath, setVxEndFramePath] = useState<string | null>(null);
   const [vxImageMode, setVxImageMode] = useState<'none' | 'start_end' | 'reference'>('none');
+  const imageMedia = media.filter((m) => m.type === 'image');
+  const audioMedia = media.filter((m) => m.type === 'audio');
+  const videoMedia = media.filter((m) => m.type === 'video');
+  const selectedCharacter = selectedCharacterId ? characters.find((c) => c.character_id === selectedCharacterId) : null;
+  const [jobs, setJobs] = useState<Job[]>([]);
   function ProjectPicker({ projectId, onSwitch }: { projectId: string; onSwitch: (pid: string) => void }) {
     const [projects, setProjects] = useState<string[]>([]);
     const [newId, setNewId] = useState<string>(projectId);
@@ -140,11 +182,38 @@ export default function App() {
         if (!cancelled) {
           setScenes(list);
           if (!selectedSceneId && list.length > 0) {
-            setSelectedSceneId(list[0].scene_id);
+            setSelectedSceneId(list[list.length - 1].scene_id);
+          }
+          // If no scenes exist, create a default scene and select it
+          if (list.length === 0) {
+            const defaultId = 'scene_001';
+            try {
+              const cres = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scene_id: defaultId, title: 'Scene 001' })
+              });
+              if (cres.ok) {
+                const d2 = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes`).then((r) => r.json());
+                setScenes(d2.scenes ?? []);
+                setSelectedSceneId(defaultId);
+              }
+            } catch (_) {}
           }
         }
       } catch (_) {
         if (!cancelled) setScenes([]);
+      }
+      // Load characters
+      try {
+        const data = await fetch(`http://127.0.0.1:8000/storage/${projectId}/characters`).then((r) => r.json());
+        const list = data.characters ?? [];
+        if (!cancelled) {
+          setCharacters(list);
+          if (!selectedCharacterId && list.length > 0) setSelectedCharacterId(list[0].character_id);
+        }
+      } catch (_) {
+        if (!cancelled) setCharacters([]);
       }
       // Load media after scan
       try {
@@ -170,6 +239,221 @@ export default function App() {
   async function refreshMedia() {
     const m = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`).then((r) => r.json());
     setMedia(m.media ?? []);
+  }
+
+  async function refreshCharacters() {
+    const data = await fetch(`http://127.0.0.1:8000/storage/${projectId}/characters`).then((r) => r.json());
+    const list = data.characters ?? [];
+    setCharacters(list);
+    if (!selectedCharacterId && list.length > 0) {
+      setSelectedCharacterId(list[0].character_id);
+    } else if (selectedCharacterId && !list.find((c: Character) => c.character_id === selectedCharacterId)) {
+      setSelectedCharacterId(list.length ? list[0].character_id : null);
+    }
+  }
+
+  function startJob(label: string): string {
+    const id = `job_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    setJobs((jobs) => [...jobs, { id, label, status: 'running' }]);
+    return id;
+  }
+
+  function finishJob(id: string, status: 'done' | 'error', detail?: string) {
+    setJobs((jobs) =>
+      jobs.map((job) => (job.id === id ? { ...job, status, detail } : job))
+    );
+    setTimeout(() => {
+      setJobs((jobs) => jobs.filter((job) => job.id !== id));
+    }, 4000);
+  }
+
+  function openCharacterModal(char?: Character) {
+    if (char) {
+      setEditingCharacter(char);
+      setNewCharacterName(char.name);
+      setNewCharacterVoice(char.voice_id ?? '');
+      setNewCharacterStyle(char.style_tokens ?? '');
+      setNewCharacterImages(char.reference_image_ids ?? []);
+    } else {
+      setEditingCharacter(null);
+      setNewCharacterName('New Character');
+      setNewCharacterVoice('');
+      setNewCharacterStyle('');
+      setNewCharacterImages([]);
+    }
+    setIsCharacterModalOpen(true);
+  }
+
+  function MediaPreviewCard({
+    item,
+    selected,
+    onSelect,
+  }: {
+    item: any;
+    selected: boolean;
+    onSelect: () => void;
+  }) {
+    const url = `http://127.0.0.1:8000${item.url}`;
+    return (
+      <button
+        className={`rounded-lg border p-1 w-24 h-28 flex flex-col items-center justify-center text-[10px] ${
+          selected ? 'border-violet-500 text-violet-200' : 'border-neutral-700 text-neutral-300'
+        }`}
+        onClick={onSelect}
+      >
+        {item.type === 'image' ? (
+          <img src={url} className="w-full h-16 object-cover rounded" />
+        ) : item.type === 'video' ? (
+          <video src={url} className="w-full h-16 object-cover rounded" muted playsInline />
+        ) : (
+          <div className="w-full h-16 bg-neutral-900/60 rounded flex items-center justify-center text-[12px]">
+            Audio
+          </div>
+        )}
+        <span className="mt-1 truncate w-full">{item.id}</span>
+        {selected ? <span className="text-violet-300">✓</span> : null}
+      </button>
+    );
+  }
+
+  async function handleSaveCharacter() {
+    const payload = {
+      character_id: editingCharacter?.character_id ?? `char_${Date.now()}`,
+      name: newCharacterName || editingCharacter?.name || 'Untitled',
+      voice_id: newCharacterVoice || undefined,
+      style_tokens: newCharacterStyle || undefined,
+      reference_image_ids: newCharacterImages
+    };
+    const method = editingCharacter ? 'PUT' : 'POST';
+    const url = editingCharacter
+      ? `http://127.0.0.1:8000/storage/${projectId}/characters/${editingCharacter.character_id}`
+      : `http://127.0.0.1:8000/storage/${projectId}/characters`;
+    await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    await refreshCharacters();
+    setIsCharacterModalOpen(false);
+    setEditingCharacter(null);
+  }
+
+  async function handleDeleteCharacter(id: string) {
+    if (!confirm('Delete this character?')) return;
+    await fetch(`http://127.0.0.1:8000/storage/${projectId}/characters/${id}`, { method: 'DELETE' });
+    await refreshCharacters();
+    if (selectedCharacterId === id) {
+      setSelectedCharacterId(null);
+    }
+  }
+
+  async function startRecording() {
+    try {
+      // Stop existing recording if any
+      if (recordingRef.current) {
+        recordingRef.current.stop();
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunks.push(ev.data);
+      };
+      recorder.onstop = async () => {
+        setIsRecording(false);
+        stream.getTracks().forEach((track) => track.stop());
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        setRecordedAudioUrl(URL.createObjectURL(blob));
+        const file = new File([blob], `recording_${Date.now()}.webm`, { type: blob.type });
+        const form = new FormData();
+        form.append('file', file);
+        const res = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`, {
+          method: 'POST',
+          body: form
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          setRecordedMediaPath(data.item?.path ?? null);
+          await refreshMedia();
+        } else {
+          alert(data.detail || 'Failed to upload recording');
+        }
+      };
+      recorder.start();
+      recordingRef.current = recorder;
+      setIsRecording(true);
+      setRecordedMediaPath(null);
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || 'Unable to access microphone');
+    }
+  }
+
+  function stopRecording() {
+    if (recordingRef.current) {
+      recordingRef.current.stop();
+      recordingRef.current = null;
+    }
+  }
+
+  async function handleVoiceGenerate() {
+    const char = voiceCharacterId
+      ? characters.find((c) => c.character_id === voiceCharacterId)
+      : selectedCharacter;
+    const resolvedVoiceId = voiceId || char?.voice_id || undefined;
+    const jobId = startJob(voiceMode === 'tts' ? 'Generating voice (TTS)' : 'Generating voice (V2V)');
+    try {
+      if (voiceMode === 'tts') {
+        if (!voiceText.trim()) {
+          finishJob(jobId, 'error', 'No text provided');
+          alert('Enter text for TTS.');
+          return;
+        }
+        const r = await fetch('http://127.0.0.1:8000/ai/voice/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project_id: projectId, text: voiceText, voice_id: resolvedVoiceId, filename: voiceOutputName || undefined })
+        });
+        const d = await r.json();
+        if (d.status !== 'ok') {
+          throw new Error(d.detail || 'Voice generation failed');
+        }
+      } else {
+        const audioPath =
+          recordedMediaPath ||
+          (selectedAudioId ? media.find((m) => m.id === selectedAudioId)?.path : undefined);
+        if (!audioPath) {
+          finishJob(jobId, 'error', 'Select or record audio');
+          alert('Select or record audio for voice-to-voice.');
+          return;
+        }
+        const r = await fetch('http://127.0.0.1:8000/ai/voice/v2v', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project_id: projectId,
+            source_wav: audioPath,
+            voice_id: resolvedVoiceId,
+            filename: voiceOutputName || undefined
+          })
+        });
+        const d = await r.json();
+        if (d.status !== 'ok') {
+          throw new Error(d.detail || 'Voice conversion failed');
+        }
+      }
+      await refreshMedia();
+      setIsVoiceOpen(false);
+      setVoiceText('');
+      setSelectedAudioId(null);
+      setRecordedAudioUrl(null);
+      setRecordedMediaPath(null);
+      finishJob(jobId, 'done');
+    } catch (err: any) {
+      console.error(err);
+      finishJob(jobId, 'error', err?.message || 'Voice generation error');
+      alert(err?.message || 'Voice generation error');
+    }
   }
 
   async function debugHead(url: string) {
@@ -208,6 +492,16 @@ export default function App() {
   useEffect(() => {
     refreshMedia().catch(() => {});
   }, [projectId]);
+
+  useEffect(() => {
+    // Prefill reference images when a character with references is active on Vertex provider
+    if (provider !== 'vertex') return;
+    const char = selectedCharacterId ? characters.find((c) => c.character_id === selectedCharacterId) : null;
+    if (char?.reference_image_ids?.length) {
+      setVxImageMode('reference');
+      setVxRefImageIds(char.reference_image_ids);
+    }
+  }, [selectedCharacterId, provider, characters]);
 
   async function initProject() {
     setIsCreating(true);
@@ -267,6 +561,24 @@ export default function App() {
         </div>
         <div className="flex items-center gap-3">
           <div className="text-xs text-neutral-400">Backend: {health}</div>
+          {jobs.length ? (
+            <div className="flex flex-wrap gap-2 max-w-[420px]">
+              {jobs.map((job) => (
+                <div
+                  key={job.id}
+                  className={`px-2 py-1 rounded-lg border text-[11px] ${
+                    job.status === 'running'
+                      ? 'border-amber-400 text-amber-200'
+                      : job.status === 'done'
+                      ? 'border-emerald-400 text-emerald-200'
+                      : 'border-red-400 text-red-200'
+                  }`}
+                >
+                  {job.status === 'running' ? '⏳' : job.status === 'done' ? '✅' : '⚠️'} {job.label}
+                </div>
+              ))}
+            </div>
+          ) : null}
           <Dialog.Root open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
             <Dialog.Trigger asChild>
               <button className="button">
@@ -284,6 +596,10 @@ export default function App() {
                   <div className="col-span-2">
                     <label className="block text-xs text-neutral-400 mb-1">Replicate API Token</label>
                     <input className="field" value={settings.replicate_api_token ?? ''} onChange={(e) => setSettings((s: any) => ({ ...s, replicate_api_token: e.target.value }))} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block text-xs text-neutral-400 mb-1">Vertex Temp GCS Bucket</label>
+                    <input className="field" placeholder="your-bucket-name" value={settings.vertex_temp_bucket ?? ''} onChange={(e) => setSettings((s: any) => ({ ...s, vertex_temp_bucket: e.target.value }))} />
                   </div>
                   <div>
                     <label className="block text-xs text-neutral-400 mb-1">ElevenLabs API Key</label>
@@ -483,6 +799,101 @@ export default function App() {
             ))
           )}
         </div>
+
+        <div className="mt-6 text-xs uppercase tracking-wide text-neutral-400 mb-2">Characters</div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-semibold">Characters</div>
+          <button className="button text-xs px-2 py-1" onClick={() => openCharacterModal()}>
+            <Plus className="w-3 h-3" /> Add
+          </button>
+        </div>
+        <div className="space-y-2 max-h-[30vh] overflow-y-auto pr-1">
+          {characters.length === 0 ? (
+            <div className="text-xs text-neutral-500 card p-3">No characters yet.</div>
+          ) : (
+            characters.map((c) => (
+              <div
+                key={c.character_id}
+                className={`p-3 rounded-xl border bg-neutral-900/40 space-y-1 ${
+                  selectedCharacterId === c.character_id ? 'border-violet-600' : 'border-neutral-800 hover:border-neutral-700'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <button className="text-sm font-semibold hover:underline" onClick={() => setSelectedCharacterId(c.character_id)}>
+                      {c.name}
+                    </button>
+                    {c.voice_id ? <div className="text-[11px] text-neutral-500 mt-0.5">Voice: {c.voice_id}</div> : null}
+                    <div className="text-[11px] text-neutral-500 mt-0.5">
+                      Ref images: {c.reference_image_ids?.length ?? 0}
+                    </div>
+                  </div>
+                  <div className="flex gap-1">
+                    <button className="button text-[11px] px-2 py-1" onClick={() => openCharacterModal(c)}>
+                      Edit
+                    </button>
+                    <button className="button text-[11px] px-2 py-1" onClick={() => handleDeleteCharacter(c.character_id)}>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <Dialog.Root open={isCharacterModalOpen} onOpenChange={(open) => { setIsCharacterModalOpen(open); if (!open) setEditingCharacter(null); }}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[520px] card p-5 max-h-[85vh] overflow-y-auto">
+              <Dialog.Title className="text-sm font-semibold mb-3">
+                {editingCharacter ? 'Edit Character' : 'Add Character'}
+              </Dialog.Title>
+              <label className="block text-xs text-neutral-400 mb-1">Name</label>
+              <input className="field mb-2" value={newCharacterName} onChange={(e) => setNewCharacterName(e.target.value)} />
+              <label className="block text-xs text-neutral-400 mb-1">ElevenLabs Voice ID</label>
+              <input className="field mb-2" value={newCharacterVoice} onChange={(e) => setNewCharacterVoice(e.target.value)} placeholder="voice-..." />
+              <label className="block text-xs text-neutral-400 mb-1">Style Tokens</label>
+              <textarea className="field h-20 mb-2" value={newCharacterStyle} onChange={(e) => setNewCharacterStyle(e.target.value)} placeholder="ethereal, victorian, ..."></textarea>
+              <div className="mb-2 text-xs text-neutral-400">Reference images (with preview)</div>
+              <div className="flex flex-wrap gap-2 max-h-[200px] overflow-y-auto">
+                {imageMedia.length === 0 ? (
+                  <div className="text-xs text-neutral-500">Import images first.</div>
+                ) : (
+                  imageMedia.map((img) => {
+                    const selected = newCharacterImages.includes(img.id);
+                    const imgUrl = `http://127.0.0.1:8000${img.url}`;
+                    return (
+                      <button
+                        key={img.id}
+                        className={`rounded-lg border p-1 w-20 h-20 flex flex-col items-center justify-center text-[10px] ${
+                          selected ? 'border-violet-500 text-violet-200' : 'border-neutral-700 text-neutral-300'
+                        }`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setNewCharacterImages((prev) =>
+                            prev.includes(img.id) ? prev.filter((id) => id !== img.id) : [...prev, img.id]
+                          );
+                        }}
+                      >
+                        <img src={imgUrl} className="w-full h-12 object-cover rounded" />
+                        <span className="mt-1 truncate w-full">{img.id}</span>
+                        {selected ? <span className="text-violet-300">✓</span> : null}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <Dialog.Close asChild>
+                  <button className="button">Cancel</button>
+                </Dialog.Close>
+                <button className="button-primary" onClick={handleSaveCharacter}>
+                  Save
+                </button>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
       </aside>
 
       {/* Center: Timeline & Preview */}
@@ -502,7 +913,7 @@ export default function App() {
                 }}
               >
                 <Dialog.Trigger asChild>
-                  <button className="button disabled:opacity-50" disabled={health !== 'ok'}>
+                  <button className="button">
                     <Video className="w-4 h-4" /> Generate Shot
                   </button>
                 </Dialog.Trigger>
@@ -521,6 +932,36 @@ export default function App() {
                           <option value="vertex">Vertex (Veo 3.1)</option>
                         </select>
                       </div>
+                      <div className="flex items-end">
+                        <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
+                          <input
+                            type="checkbox"
+                            checked={genAudio}
+                            onChange={(e) => setGenAudio(e.target.checked)}
+                          />
+                          Generate audio (costs more; Veo default off)
+                        </label>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <div>
+                        <label className="block text-xs text-neutral-400 mb-1">Character</label>
+                        <select className="field" value={selectedCharacterId ?? ''} onChange={(e) => setSelectedCharacterId(e.target.value || null)}>
+                          <option value="">None</option>
+                          {characters.map((c) => (
+                            <option key={c.character_id} value={c.character_id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedCharacter ? (
+                        <div className="text-xs text-neutral-400 mt-6">
+                          Voice: {selectedCharacter.voice_id || 'unset'} {selectedCharacter.reference_image_ids?.length ? `• ${selectedCharacter.reference_image_ids.length} refs` : ''}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-neutral-500 mt-6">No character selected</div>
+                      )}
                     </div>
                     {provider === 'vertex' ? (
                       <div className="space-y-3 mb-3">
@@ -536,6 +977,8 @@ export default function App() {
                                 setVxStartImageId(null);
                                 setVxEndImageId(null);
                                 setVxRefImageIds([]);
+                                setVxStartFromVideoId(null);
+                                setVxStartFramePath(null);
                                 setVxEndFromVideoId(null);
                                 setVxEndFramePath(null);
                               }}
@@ -564,6 +1007,8 @@ export default function App() {
                                 setVxUsePrevLast(false);
                                 setVxStartImageId(null);
                                 setVxEndImageId(null);
+                                setVxStartFromVideoId(null);
+                                setVxStartFramePath(null);
                                 setVxEndFromVideoId(null);
                                 setVxEndFramePath(null);
                               }}
@@ -595,7 +1040,13 @@ export default function App() {
                               className="field"
                               disabled={vxUsePrevLast}
                               value={vxStartImageId ?? ''}
-                              onChange={(e) => setVxStartImageId(e.target.value || null)}
+                              onChange={(e) => {
+                                setVxStartImageId(e.target.value || null);
+                                if (e.target.value) {
+                                  setVxStartFromVideoId(null);
+                                  setVxStartFramePath(null);
+                                }
+                              }}
                             >
                               <option value="">None</option>
                               {media.filter((m) => m.type === 'image').map((m) => (
@@ -611,9 +1062,57 @@ export default function App() {
                                 />
                               </div>
                             ) : null}
+                            <label className="block text-xs text-neutral-400 mb-1 mt-3">OR Start from video's last frame</label>
+                            <select
+                              className="field"
+                              disabled={vxUsePrevLast}
+                              value={vxStartFromVideoId ?? ''}
+                              onChange={(e) => {
+                                setVxStartFromVideoId(e.target.value || null);
+                                if (e.target.value) {
+                                  setVxStartImageId(null);
+                                }
+                              }}
+                            >
+                              <option value="">None</option>
+                              {media.filter((m) => m.type === 'video').map((m) => (
+                                <option key={m.id} value={m.id}>{m.id}</option>
+                              ))}
+                            </select>
+                            <button
+                              className="button text-[11px] px-2 py-1 mt-2"
+                              disabled={!vxStartFromVideoId}
+                              onClick={async () => {
+                                const vid = media.find(m => m.id === vxStartFromVideoId);
+                                if (!vid) return;
+                                const r = await fetch('http://127.0.0.1:8000/frames/last', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ project_id: projectId, video_path: vid.path })
+                                });
+                                const d = await r.json();
+                                if (d.status === 'ok') {
+                                  setVxStartFramePath(d.image_path);
+                                  setVxImageMode('start_end');
+                                } else {
+                                  alert(d.detail || 'Failed to extract last frame');
+                                }
+                              }}
+                            >
+                              Extract as start
+                            </button>
+                            {vxStartFramePath ? (
+                              <div className="mt-2">
+                                <div className="text-[11px] text-neutral-400 mb-1">Extracted start frame</div>
+                                <img
+                                  src={`http://127.0.0.1:8000/files/${vxStartFramePath.replace('project_data/', '')}`}
+                                  className="w-full h-24 object-cover rounded border border-neutral-800"
+                                />
+                              </div>
+                            ) : null}
                           </div>
                           <div>
-                            <label className="block text-xs text-neutral-400 mb-1">End frame (image)</label>
+                            <label className="block text-xs text-neutral-400 mb-1">End frame (image, optional)</label>
                             <select
                               className="field"
                               disabled={false}
@@ -629,54 +1128,6 @@ export default function App() {
                               <div className="mt-2">
                                 <img
                                   src={`http://127.0.0.1:8000${media.find(m => m.id === vxEndImageId)?.url ?? ''}`}
-                                  className="w-full h-24 object-cover rounded border border-neutral-800"
-                                />
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="block text-xs text-neutral-400 mb-1">End frame from video</label>
-                            <select
-                              className="field"
-                              value={vxEndFromVideoId ?? ''}
-                              onChange={(e) => setVxEndFromVideoId(e.target.value || null)}
-                            >
-                              <option value="">None</option>
-                              {media.filter((m) => m.type === 'video').map((m) => (
-                                <option key={m.id} value={m.id}>{m.id}</option>
-                              ))}
-                            </select>
-                            <button
-                              className="button text-[11px] px-2 py-1 mt-2"
-                              disabled={!vxEndFromVideoId}
-                              onClick={async () => {
-                                const vid = media.find(m => m.id === vxEndFromVideoId);
-                                if (!vid) return;
-                                const r = await fetch('http://127.0.0.1:8000/frames/last', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ project_id: projectId, video_path: vid.path })
-                                });
-                                const d = await r.json();
-                                if (d.status === 'ok') {
-                                  setVxEndFramePath(d.image_path);
-                                  setVxImageMode('start_end');
-                                } else {
-                                  alert(d.detail || 'Failed to extract last frame');
-                                }
-                              }}
-                            >
-                              Extract last frame
-                            </button>
-                          </div>
-                          <div>
-                            {vxEndFramePath ? (
-                              <div className="mt-6">
-                                <div className="text-[11px] text-neutral-400 mb-1">Extracted end frame</div>
-                                <img
-                                  src={`http://127.0.0.1:8000/files/${vxEndFramePath.replace('project_data/', '')}`}
                                   className="w-full h-24 object-cover rounded border border-neutral-800"
                                 />
                               </div>
@@ -725,63 +1176,379 @@ export default function App() {
                       </Dialog.Close>
                       <button
                         onClick={async () => {
-                          if (!selectedSceneId) return;
-                          let reference_frame: string | undefined = undefined;
-                          if (isContPrevFrame && (sceneDetail?.shots?.length ?? 0) > 0) {
-                            const last = sceneDetail!.shots[sceneDetail!.shots.length - 1];
-                            const ref = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${last.shot_id}/last-frame`).then((r) => r.json());
-                            if (ref.status === 'ok') {
-                              reference_frame = ref.path;
+                          let jobId: string | null = null;
+                          try {
+                            // Ensure a scene is selected; auto-create if missing
+                            if (!selectedSceneId) {
+                              const sceneId = `scene_${String(scenes.length + 1 || 1).padStart(3, '0')}`;
+                              const res = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ scene_id: sceneId, title: `Scene ${sceneId.split('_').pop()}` })
+                              }).catch(() => null);
+                              if (res && res.ok) {
+                                const s = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes`).then((r) => r.json()).catch(() => ({ scenes: [] }));
+                                setScenes(s.scenes ?? []);
+                                setSelectedSceneId(sceneId);
+                              } else {
+                                alert('Could not create a scene. Try again.');
+                                return;
+                              }
                             }
-                          }
-                          setIsGenerating(true);
-                          const startFramePath =
-                            provider === 'vertex'
-                              ? (vxUsePrevLast ? reference_frame : (vxStartImageId ? media.find(m => m.id === vxStartImageId)?.path : undefined))
-                              : reference_frame;
-                        const endFramePath =
-                          provider === 'vertex'
-                            ? (vxEndFramePath ?? (vxEndImageId ? media.find(m => m.id === vxEndImageId)?.path : undefined))
-                            : undefined;
-                          const refImages =
-                            provider === 'vertex' ? vxRefImageIds.map(id => media.find(m => m.id === id)?.path!).filter(Boolean) : undefined;
-                          const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
+                            let reference_frame: string | undefined = undefined;
+                            if (isContPrevFrame && (sceneDetail?.shots?.length ?? 0) > 0) {
+                              const last = sceneDetail!.shots[sceneDetail!.shots.length - 1];
+                              const ref = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${last.shot_id}/last-frame`).then((r) => r.json());
+                              if (ref.status === 'ok') {
+                                reference_frame = ref.path;
+                              }
+                            }
+                            setIsGenerating(true);
+                            // Enforce exclusivity in payload
+                            let startFramePath: string | undefined = undefined;
+                            let endFramePath: string | undefined = undefined;
+                            let refImages: string[] | undefined = undefined;
+                            const activeChar = selectedCharacterId ? characters.find((c) => c.character_id === selectedCharacterId) : null;
+                            const charRefPaths = activeChar?.reference_image_ids
+                              ?.map((id) => media.find((m) => m.id === id)?.path)
+                              .filter(Boolean) as string[] | undefined;
+                            const promptWithStyle =
+                              activeChar?.style_tokens && activeChar.style_tokens.trim().length
+                                ? `${genPrompt}\nCharacter style: ${activeChar.style_tokens}`
+                                : genPrompt;
+                            if (provider === 'vertex') {
+                              if (vxImageMode === 'reference') {
+                                const manualRefs = vxRefImageIds.map(id => media.find(m => m.id === id)?.path!).filter(Boolean) as string[];
+                                refImages = manualRefs.length ? manualRefs : (charRefPaths ?? undefined);
+                                startFramePath = undefined;
+                                endFramePath = undefined;
+                              } else if (vxImageMode === 'start_end') {
+                                // Priority: vxUsePrevLast > vxStartFramePath (extracted from video) > vxStartImageId
+                                startFramePath = vxUsePrevLast 
+                                  ? reference_frame 
+                                  : (vxStartFramePath || (vxStartImageId ? media.find(m => m.id === vxStartImageId)?.path : undefined));
+                                // End frame is always an image (vxEndImageId selected)
+                                endFramePath = vxEndImageId ? media.find(m => m.id === vxEndImageId)?.path : undefined;
+                              } else {
+                                // none
+                                startFramePath = undefined;
+                                endFramePath = undefined;
+                                refImages = charRefPaths;
+                              }
+                            } else {
+                              // Replicate uses reference_frame only
+                              startFramePath = reference_frame;
+                            }
+                            jobId = startJob(`Generating shot ${selectedSceneId}`);
+                            const payload = {
                               project_id: projectId,
                               scene_id: selectedSceneId,
-                              prompt: genPrompt,
+                              prompt: promptWithStyle,
                               provider,
-                              model: provider === 'replicate' ? 'google/veo-3.1' : 'veo-3.1-generate-preview',
+                              model: provider === 'replicate' ? 'google/veo-3.1' : 'veo-3.1-fast-generate-preview',
                               duration: 8,
                               resolution: '1080p',
                               aspect_ratio: '16:9',
-                              reference_frame: provider === 'replicate' ? reference_frame : undefined,
-                              start_frame_path: startFramePath,
-                              end_frame_path: endFramePath,
-                              reference_images: refImages
-                            })
-                          });
-                          const data = await res.json();
-                          if (data.status === 'ok') {
-                            const url = `http://127.0.0.1:8000${data.file_url}`;
-                            setCurrentVideoUrl(url);
-                            setNowPlaying(url);
-                            setPlayError('');
-                            // refresh detail
-                            const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
-                            setSceneDetail(d.scene ?? null);
-                            setIsGenOpen(false);
-                          } else {
-                            alert(data.detail || 'Generation failed');
+                              reference_frame: provider === 'replicate' ? startFramePath : undefined,
+                              start_frame_path: provider === 'vertex' ? startFramePath : undefined,
+                              end_frame_path: provider === 'vertex' ? endFramePath : undefined,
+                              reference_images: provider === 'vertex' ? refImages : undefined,
+                              generate_audio: provider === 'replicate' ? genAudio : false
+                            };
+                            console.log('Generate payload', payload);
+                            const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify(payload)
+                            });
+                            const data = await res.json().catch(() => ({}));
+                            if (res.ok && data.status === 'ok') {
+                              const url = `http://127.0.0.1:8000${data.file_url}`;
+                              setCurrentVideoUrl(url);
+                              setNowPlaying(url);
+                              setPlayError('');
+                              // refresh detail and media
+                              const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
+                              setSceneDetail(d.scene ?? null);
+                              await refreshMedia();
+                              setIsGenOpen(false);
+                              if (jobId) finishJob(jobId, 'done');
+                            } else {
+                              console.error('Generate failed', data);
+                              if (jobId) finishJob(jobId, 'error', data.detail || `HTTP ${res.status}`);
+                              alert(data.detail || `Generation failed (${res.status})`);
+                            }
+                          } catch (err: any) {
+                            console.error('Generate error', err);
+                            if (jobId) finishJob(jobId, 'error', err?.message || 'Generation error');
+                            alert(`Generation error: ${err?.message || err}`);
+                          } finally {
+                            setIsGenerating(false);
                           }
-                          setIsGenerating(false);
                         }}
                         className="button-primary"
                       >
                         {isGenerating ? 'Generating…' : 'Generate'}
                       </button>
+                    </div>
+                  </Dialog.Content>
+                </Dialog.Portal>
+              </Dialog.Root>
+              <Dialog.Root
+                open={isVoiceOpen}
+                onOpenChange={(open) => {
+                  setIsVoiceOpen(open);
+                  if (open) {
+                    setVoiceMode('tts');
+                    setVoiceText('');
+                    setVoiceId(selectedCharacter?.voice_id ?? '');
+                    setVoiceCharacterId(selectedCharacter?.character_id ?? '');
+                    setSelectedAudioId(null);
+                    setRecordedAudioUrl(null);
+                    setRecordedMediaPath(null);
+                    setVoiceOutputName('');
+                  } else {
+                    if (recordingRef.current) {
+                      recordingRef.current.stop();
+                      recordingRef.current = null;
+                    }
+                    setIsRecording(false);
+                  }
+                }}
+              >
+                <Dialog.Trigger asChild>
+                  <button className="button">Generate Voice (ElevenLabs)</button>
+                </Dialog.Trigger>
+                <Dialog.Portal>
+                  <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+                  <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] card p-5">
+                    <Dialog.Title className="text-sm font-semibold mb-2">Generate Voice</Dialog.Title>
+                    <Dialog.Description className="text-xs text-neutral-400 mb-3">
+                      Create TTS or voice-to-voice clips. Select a character to auto-fill voice IDs.
+                    </Dialog.Description>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="block text-xs text-neutral-400 mb-1">Character</label>
+                      <select
+                        className="field"
+                        value={voiceCharacterId || selectedCharacterId || ''}
+                        onChange={(e) => setVoiceCharacterId(e.target.value || '')}
+                      >
+                        <option value="">None</option>
+                        {characters.map((c) => (
+                          <option key={c.character_id} value={c.character_id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-neutral-400 mb-1">Override Voice ID</label>
+                      <input
+                        className="field"
+                        value={voiceId}
+                        onChange={(e) => setVoiceId(e.target.value)}
+                        placeholder={selectedCharacter?.voice_id || 'voice-...'}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-4 text-xs text-neutral-400 mb-3">
+                    <label className="inline-flex items-center gap-2">
+                      <input type="radio" checked={voiceMode === 'tts'} onChange={() => setVoiceMode('tts')} />
+                      Text → Voice
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input type="radio" checked={voiceMode === 'v2v'} onChange={() => setVoiceMode('v2v')} />
+                      Voice → Voice
+                    </label>
+                  </div>
+                  {voiceMode === 'tts' ? (
+                    <>
+                      <label className="block text-xs text-neutral-400 mb-1">Text</label>
+                      <textarea className="field h-28" value={voiceText} onChange={(e) => setVoiceText(e.target.value)} />
+                    </>
+                  ) : (
+                    <>
+                      <label className="block text-xs text-neutral-400 mb-1">Source audio</label>
+                      <select className="field mb-2" value={selectedAudioId ?? ''} onChange={(e) => setSelectedAudioId(e.target.value || null)}>
+                        <option value="">Select audio</option>
+                        {audioMedia.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.id}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="flex items-center gap-2 mb-2">
+                        <button className="button text-xs px-2 py-1" onClick={startRecording} disabled={isRecording}>
+                          {isRecording ? 'Recording…' : 'Record'}
+                        </button>
+                        <button className="button text-xs px-2 py-1" onClick={stopRecording} disabled={!isRecording}>
+                          Stop
+                        </button>
+                        {recordedAudioUrl ? <span className="text-xs text-neutral-400">Recorded clip saved</span> : null}
+                      </div>
+                      {recordedAudioUrl ? (
+                        <audio controls src={recordedAudioUrl} className="w-full mb-2">
+                          Your browser does not support audio playback.
+                        </audio>
+                      ) : null}
+                    </>
+                  )}
+                  <label className="block text-xs text-neutral-400 mt-3 mb-1">Output name</label>
+                  <input className="field" placeholder="e.g., Ruthven line 1" value={voiceOutputName} onChange={(e) => setVoiceOutputName(e.target.value)} />
+                    <div className="mt-4 flex justify-end gap-2">
+                      <Dialog.Close asChild><button className="button">Cancel</button></Dialog.Close>
+                    <button className="button-primary" onClick={handleVoiceGenerate}>
+                      Generate
+                    </button>
+                    </div>
+                  </Dialog.Content>
+                </Dialog.Portal>
+              </Dialog.Root>
+              <Dialog.Root
+                open={isLipOpen}
+                onOpenChange={(o) => {
+                  setIsLipOpen(o);
+                  if (o) {
+                    setLipMode('video');
+                    const latestVideo = [...media].reverse().find((m) => m.type === 'video');
+                    const latestAudio = [...media].reverse().find((m) => m.type === 'audio');
+                    const latestImage = [...media].reverse().find((m) => m.type === 'image');
+                    setLipVideoId(latestVideo?.id ?? null);
+                    setLipAudioId(latestAudio?.id ?? null);
+                    setLipImageId(latestImage?.id ?? null);
+                    setLipPrompt('');
+                    setLipOutputName('');
+                  } else {
+                    setLipVideoId(null);
+                    setLipAudioId(null);
+                    setLipImageId(null);
+                  }
+                }}
+              >
+                <Dialog.Trigger asChild>
+                  <button className="button">Lip-Sync (Wavespeed)</button>
+                </Dialog.Trigger>
+                <Dialog.Portal>
+                  <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+                  <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] card p-5">
+                    <Dialog.Title className="text-sm font-semibold mb-2">Lip-Sync (Wavespeed)</Dialog.Title>
+                    <Dialog.Description className="text-xs text-neutral-400 mb-3">
+                      Choose a video or reference image plus an audio clip. Result saves into your media library.
+                    </Dialog.Description>
+                    <div className="flex gap-4 text-xs text-neutral-400 mb-3">
+                      <label className="inline-flex items-center gap-2">
+                        <input type="radio" checked={lipMode === 'video'} onChange={() => setLipMode('video')} />
+                        Video + Audio → Re-sync
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input type="radio" checked={lipMode === 'image'} onChange={() => setLipMode('image')} />
+                        Image + Audio → Talking portrait
+                      </label>
+                    </div>
+                    {lipMode === 'video' ? (
+                      <div>
+                        <div className="text-xs text-neutral-400 mb-1">Video clip</div>
+                        <div className="flex flex-wrap gap-2 max-h-[150px] overflow-y-auto">
+                          {videoMedia.length === 0 ? (
+                            <div className="text-xs text-neutral-500">No videos yet.</div>
+                          ) : (
+                            videoMedia.map((item) => (
+                              <MediaPreviewCard key={item.id} item={item} selected={lipVideoId === item.id} onSelect={() => setLipVideoId(item.id)} />
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="text-xs text-neutral-400 mb-1">Reference image</div>
+                        <div className="flex flex-wrap gap-2 max-h-[150px] overflow-y-auto">
+                          {imageMedia.length === 0 ? (
+                            <div className="text-xs text-neutral-500">No images yet.</div>
+                          ) : (
+                            imageMedia.map((item) => (
+                              <MediaPreviewCard key={item.id} item={item} selected={lipImageId === item.id} onSelect={() => setLipImageId(item.id)} />
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <div className="mt-3">
+                      <div className="text-xs text-neutral-400 mb-1">Audio</div>
+                      <div className="flex flex-wrap gap-2 max-h-[120px] overflow-y-auto">
+                        {audioMedia.length === 0 ? (
+                          <div className="text-xs text-neutral-500">No audio files yet.</div>
+                        ) : (
+                          audioMedia.map((item) => (
+                            <MediaPreviewCard key={item.id} item={item} selected={lipAudioId === item.id} onSelect={() => setLipAudioId(item.id)} />
+                          ))
+                        )}
+                      </div>
+                    </div>
+                    <label className="block text-xs text-neutral-400 mt-3 mb-1">Prompt / notes (optional)</label>
+                    <textarea className="field h-20" value={lipPrompt} onChange={(e) => setLipPrompt(e.target.value)} placeholder="e.g., keep mouth subtle, calm delivery" />
+                    <label className="block text-xs text-neutral-400 mt-3 mb-1">Output name</label>
+                    <input className="field" placeholder="e.g., Scene1_Ruthven_lipsync" value={lipOutputName} onChange={(e) => setLipOutputName(e.target.value)} />
+                    <div className="mt-4 flex justify-end gap-2">
+                      <Dialog.Close asChild><button className="button">Cancel</button></Dialog.Close>
+                      <button
+                        className="button-primary"
+                        disabled={(lipMode === 'video' ? !lipVideoId : !lipImageId) || !lipAudioId}
+                        onClick={async () => {
+                          const jobId = startJob(lipMode === 'video' ? 'Lip-sync video' : 'Lip-sync image');
+                          try {
+                            const audioItem = media.find((m) => m.id === lipAudioId);
+                            if (!audioItem) {
+                              finishJob(jobId, 'error', 'Select audio');
+                              alert('Select audio file.');
+                              return;
+                            }
+                            let endpoint = 'http://127.0.0.1:8000/ai/lipsync/video';
+                            const body: any = {
+                              project_id: projectId,
+                              audio_wav_path: audioItem.path,
+                              prompt: lipPrompt || undefined,
+                              filename: lipOutputName || undefined
+                            };
+                            if (lipMode === 'video') {
+                              const videoItem = media.find((m) => m.id === lipVideoId);
+                              if (!videoItem) {
+                                finishJob(jobId, 'error', 'Select video');
+                                alert('Select a video clip.');
+                                return;
+                              }
+                              body.video_path = videoItem.path;
+                            } else {
+                              endpoint = 'http://127.0.0.1:8000/ai/lipsync/image';
+                              const imageItem = media.find((m) => m.id === lipImageId);
+                              if (!imageItem) {
+                                finishJob(jobId, 'error', 'Select image');
+                                alert('Select an image.');
+                                return;
+                              }
+                              body.image_path = imageItem.path;
+                            }
+                            const r = await fetch(endpoint, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify(body)
+                            });
+                            const d = await r.json();
+                            if (d.status === 'ok') {
+                              await refreshMedia();
+                              setIsLipOpen(false);
+                              setCurrentVideoUrl(`http://127.0.0.1:8000${d.file_url}`);
+                              finishJob(jobId, 'done');
+                            } else {
+                              alert(d.detail || 'Lip-sync failed');
+                              finishJob(jobId, 'error', d.detail || 'Lip-sync failed');
+                            }
+                          } catch (e: any) {
+                            alert(e?.message || 'Lip-sync error');
+                            finishJob(jobId, 'error', e?.message || 'Lip-sync error');
+                          }
+                        }}
+                      >Sync</button>
                     </div>
                   </Dialog.Content>
                 </Dialog.Portal>
@@ -1002,5 +1769,3 @@ export default function App() {
     </div>
   );
 }
-
-

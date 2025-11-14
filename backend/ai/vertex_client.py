@@ -14,7 +14,7 @@ class VertexClient:
         credentials_path: str,
         project_id: str,
         location: str = "us-central1",
-        model: str = "veo-3.1-generate-preview",
+        model: str = "veo-3.1-fast-generate-preview",
         temp_bucket: str | None = None,
         timeout: int = 60,
     ):
@@ -49,12 +49,15 @@ class VertexClient:
             self.credentials_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
         client = storage.Client(project=self.project_id, credentials=credentials)
-        bucket_name = self.temp_bucket
-        if not bucket_name:
-            raise RuntimeError("Vertex temp_bucket not configured. Set settings.vertex_temp_bucket to an existing GCS bucket name.")
-        bucket = client.bucket(bucket_name)
-        if not bucket.exists():
-            raise RuntimeError(f"GCS bucket '{bucket_name}' does not exist or is not accessible by the service account.")
+        # Use provided bucket if set; otherwise auto-provision a temp bucket
+        bucket_name = self.temp_bucket or f"{self.project_id}-openfilmai-temp"
+        try:
+            bucket = client.get_bucket(bucket_name)
+        except Exception:
+            # Create bucket if missing (best-effort)
+            bucket = client.bucket(bucket_name)
+            bucket.location = self.location
+            bucket = client.create_bucket(bucket)
         blob_name = f"frames/{int(time.time())}_{os.path.basename(image_path)}"
         blob = bucket.blob(blob_name)
         blob.upload_from_filename(image_path)
@@ -69,6 +72,7 @@ class VertexClient:
         duration: int = 8,
         resolution: str = "1080p",
         aspect_ratio: str = "16:9",
+        generate_audio: bool = False,
     ) -> str:
         base = "https://us-central1-aiplatform.googleapis.com/v1"
         url = f"{base}/projects/{self.project_id}/locations/{self.location}/{self._model_path()}:predictLongRunning"
@@ -83,7 +87,11 @@ class VertexClient:
                 {"gcsUri": self._upload_image_to_gcs(p), "mimeType": "image/jpeg"} for p in reference_images
             ]
 
-        body = {"instances": [instance], "parameters": {"sampleCount": 1}}
+        params: Dict[str, Any] = {"sampleCount": 1}
+        # Try to explicitly disable audio where supported; unknown keys are ignored by API
+        params["addAudio"] = bool(generate_audio)
+        params["enableAudio"] = bool(generate_audio)
+        body = {"instances": [instance], "parameters": params}
         r = requests.post(url, headers=self._headers(), json=body, timeout=self.timeout)
         r.raise_for_status()
         op_name = r.json().get("name")
@@ -108,9 +116,16 @@ class VertexClient:
                 if videos:
                     v = videos[0]
                     if "gcsUri" in v:
-                        # Convert GCS to public https for download via storage.googleapis.com
-                        path = v["gcsUri"].replace("gs://", "")
-                        return f"https://storage.googleapis.com/{path}"
+                        # Download with authorization and return a local file path
+                        http_url = v["gcsUri"].replace("gs://", "https://storage.googleapis.com/")
+                        out = f"/tmp/vertex_{int(time.time())}.mp4"
+                        rr = requests.get(http_url, headers=self._headers(), stream=True, timeout=self.timeout)
+                        rr.raise_for_status()
+                        with open(out, "wb") as f:
+                            for chunk in rr.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                        return out
                     if "bytesBase64Encoded" in v:
                         out = f"/tmp/vertex_{int(time.time())}.mp4"
                         with open(out, "wb") as f:

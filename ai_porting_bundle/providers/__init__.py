@@ -6,7 +6,6 @@ from .base import AIProvider, AIProviderError
 from .elevenlabs import ElevenLabsProvider
 from .wavespeed import WaveSpeedProvider
 from .replicate import ReplicateProvider
-from .vertex import VertexVeoProvider
 
 __all__ = [
     "AIProvider",
@@ -14,6 +13,5 @@ __all__ = [
     "ElevenLabsProvider",
     "WaveSpeedProvider",
     "ReplicateProvider",
-    "VertexVeoProvider",
 ]
 

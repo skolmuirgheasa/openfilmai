@@ -8,9 +8,9 @@
   "scripts": {
     "dev": "concurrently -k -n BACKEND,FRONTEND,ELECTRON -c cyan,green,magenta \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
     "dev:frontend": "node scripts/frontend-port-check.js && npx vite --config frontend/vite.config.ts --host",
-    "dev:electron": "wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .",
+    "dev:electron": "wait-on http://localhost:5173 http://127.0.0.1:8000/health && cross-env NODE_ENV=development electron .",
     "predev:backend": "node scripts/backend-port-check.js",
-    "dev:backend": ".venv/bin/python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000",
+    "dev:backend": "python3 -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000",
     "build": "npm run build:frontend",
     "build:frontend": "vite build --config frontend/vite.config.ts",
     "start": "cross-env NODE_ENV=production electron ."
