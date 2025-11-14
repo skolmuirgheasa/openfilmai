@@ -1129,6 +1129,27 @@ export default function App() {
                           />
                           Use previous shot's last frame as start
                         </label>
+                        {/* Preview of last frame when vxUsePrevLast is checked */}
+                        {vxUsePrevLast && (sceneDetail?.shots || []).length > 0 ? (
+                          (() => {
+                            const lastShot = (sceneDetail?.shots || [])[(sceneDetail?.shots || []).length - 1];
+                            const lastFramePath = lastShot?.last_frame_path?.replace('project_data/', '');
+                            return lastFramePath ? (
+                              <div className="mt-2 p-2 bg-violet-500/10 border border-violet-500/30 rounded">
+                                <div className="text-[10px] text-violet-400 mb-1">Preview: Last frame from previous shot</div>
+                                <img
+                                  src={`http://127.0.0.1:8000/files/${lastFramePath}`}
+                                  className="w-full h-24 object-cover rounded border border-violet-500/50"
+                                  alt="Last frame preview"
+                                />
+                              </div>
+                            ) : (
+                              <div className="mt-2 p-2 bg-red-500/10 border border-red-500/30 rounded text-[10px] text-red-400">
+                                Previous shot has no last frame
+                              </div>
+                            );
+                          })()
+                        ) : null}
                         {vxImageMode === 'start_end' ? (
                         <>
                         <div className="grid grid-cols-2 gap-3">
@@ -1349,9 +1370,20 @@ export default function App() {
                                 endFramePath = undefined;
                               } else if (vxImageMode === 'start_end') {
                                 // Priority: vxUsePrevLast > vxStartFramePath (extracted from video) > vxStartImageId
-                                startFramePath = vxUsePrevLast 
-                                  ? reference_frame 
-                                  : (vxStartFramePath || (vxStartImageId ? media.find(m => m.id === vxStartImageId)?.path : undefined));
+                                if (vxUsePrevLast) {
+                                  // Fetch last frame from previous shot
+                                  const shots = sceneDetail?.shots || [];
+                                  const lastShot = shots[shots.length - 1];
+                                  if (lastShot?.last_frame_path) {
+                                    startFramePath = lastShot.last_frame_path;
+                                  } else {
+                                    alert('Previous shot has no last frame. Generate a shot first or select a start frame manually.');
+                                    setIsGenerating(false);
+                                    return;
+                                  }
+                                } else {
+                                  startFramePath = vxStartFramePath || (vxStartImageId ? media.find(m => m.id === vxStartImageId)?.path : undefined);
+                                }
                                 // End frame is always an image (vxEndImageId selected)
                                 endFramePath = vxEndImageId ? media.find(m => m.id === vxEndImageId)?.path : undefined;
                               } else {
@@ -1693,14 +1725,16 @@ export default function App() {
                               alert('Select audio file.');
                               return;
                             }
-                            let endpoint = 'http://127.0.0.1:8000/ai/lipsync/video';
                             const body: any = {
                               project_id: projectId,
                               audio_wav_path: audioItem.path,
                               prompt: lipPrompt || undefined,
                               filename: lipOutputName || undefined
                             };
+                            let endpoint: string;
+                            
                             if (lipMode === 'video') {
+                              endpoint = 'http://127.0.0.1:8000/ai/lipsync/video';
                               const videoItem = media.find((m) => m.id === lipVideoId);
                               if (!videoItem) {
                                 finishJob(jobId, 'error', 'Select video');
@@ -1867,15 +1901,19 @@ export default function App() {
           </div>
 
           {/* Horizontal timeline at bottom */}
-          <div className="h-48 border-t border-neutral-800 bg-neutral-900/40 p-3 overflow-x-auto overflow-y-hidden flex-shrink-0">
+          <div className="h-64 border-t border-neutral-800 bg-neutral-900/40 p-3 overflow-x-auto overflow-y-auto flex-shrink-0">
             <div className="flex items-center justify-between mb-2">
               <div className="text-[10px] uppercase tracking-wider text-neutral-500">Timeline • {(sceneDetail?.shots || []).length} shots</div>
               {playError ? <div className="text-[10px] text-red-400">{playError}</div> : null}
             </div>
-            <div className="flex gap-1 items-center h-32">
+            <div className="flex gap-1 items-start min-h-[200px]">
               {(sceneDetail?.shots || []).map((sh: any, idx: number) => {
                 const thumbPath = sh.first_frame_path?.replace('project_data/', '');
                 const thumbUrl = thumbPath ? `http://127.0.0.1:8000/files/${thumbPath}` : null;
+                // Debug: log if thumbnail is missing
+                if (!thumbUrl && sh.shot_id) {
+                  console.log(`Shot ${sh.shot_id} missing first_frame_path:`, sh);
+                }
                 const videoRel = sh.file_path?.replace('project_data/', '');
                 const vidUrl = videoRel?.startsWith('project_data') ? `http://127.0.0.1:8000/files/${videoRel.replace('project_data/', '')}` : `http://127.0.0.1:8000/files/${videoRel ?? ''}`;
                 const duration = sh.duration ?? 8;
@@ -1961,8 +1999,8 @@ export default function App() {
                       </div>
                     </div>
                     <div className="p-2 space-y-1">
-                      <div className="text-[10px] text-neutral-400 truncate">{sh.shot_id}</div>
-                      <div className="flex gap-1">
+                      <div className="text-[10px] text-neutral-400 truncate max-w-full" title={sh.shot_id}>{sh.shot_id}</div>
+                      <div className="flex gap-1 flex-wrap">
                         <button
                           className="button text-[9px] px-1.5 py-0.5 flex-1"
                           onClick={(e) => {
@@ -1977,6 +2015,12 @@ export default function App() {
                           className="button text-[9px] px-1.5 py-0.5 flex-1"
                           onClick={(e) => {
                             e.stopPropagation();
+                            // Pre-select this video for lip-sync
+                            const videoId = media.find(m => m.path === sh.file_path)?.id;
+                            if (videoId) {
+                              setLipMode('video');
+                              setLipVideoId(videoId);
+                            }
                             setIsLipOpen(true);
                             setLipOutputName(`${sh.shot_id}_lipsync`);
                           }}
@@ -2004,7 +2048,12 @@ export default function App() {
                           className="button text-[9px] px-1.5 py-0.5 w-full bg-violet-500/20 hover:bg-violet-500/30 text-violet-300 mt-1"
                           onClick={async (e) => {
                             e.stopPropagation();
-                            // Auto-configure for continuity
+                            // Check if this shot has a last frame
+                            if (!sh.last_frame_path) {
+                              alert('This shot has no last frame extracted yet.');
+                              return;
+                            }
+                            // Auto-configure for continuity from THIS shot
                             setIsContPrevFrame(true);
                             setVxImageMode('start_end');
                             setVxUsePrevLast(true);
@@ -2106,30 +2155,37 @@ export default function App() {
                 );
               })}
               
-              {/* Frame Planning Card - appears after last shot */}
-              {(sceneDetail?.shots || []).length > 0 ? (
+              {/* Frame Planning Card - passive preview, doesn't auto-fill */}
+              {selectedSceneId ? (
                 <div className="flex-shrink-0 w-[400px] rounded-lg border-2 border-dashed border-neutral-700 bg-neutral-900/30 p-3">
                   <div className="text-[10px] text-neutral-500 uppercase tracking-wide mb-2 text-center">Plan Next Shot</div>
                   <div className="grid grid-cols-3 gap-2 mb-3">
                     {/* Start Frame */}
                     <div className="space-y-1">
                       <div className="text-[9px] text-neutral-600 text-center">Start Frame</div>
-                      <div className="aspect-video bg-black/40 rounded border border-neutral-800 flex items-center justify-center text-[8px] text-neutral-600">
-                        {vxUsePrevLast ? (
-                          <div className="text-center">
-                            <div className="text-violet-400">✓ Last frame</div>
-                            <div>from prev</div>
-                          </div>
-                        ) : vxStartImageId ? (
+                      <button
+                        className="aspect-video bg-black/40 rounded border border-neutral-800 hover:border-violet-500/50 flex items-center justify-center text-[8px] text-neutral-600 overflow-hidden w-full transition-colors"
+                        onClick={() => {
+                          setVxImageMode('start_end');
+                          setIsGenOpen(true);
+                        }}
+                      >
+                        {vxStartImageId ? (
                           <img 
                             src={`http://127.0.0.1:8000/files/${media.find(m => m.id === vxStartImageId)?.path?.replace('project_data/', '')}`}
                             className="w-full h-full object-cover rounded"
                             alt="Start"
                           />
+                        ) : vxStartFramePath ? (
+                          <img 
+                            src={`http://127.0.0.1:8000/files/${vxStartFramePath.replace('project_data/', '')}`}
+                            className="w-full h-full object-cover rounded"
+                            alt="Start"
+                          />
                         ) : (
-                          'None'
+                          <div className="text-neutral-600">Click to select</div>
                         )}
-                      </div>
+                      </button>
                     </div>
                     
                     {/* Video Generation */}
@@ -2143,7 +2199,13 @@ export default function App() {
                     {/* End Frame */}
                     <div className="space-y-1">
                       <div className="text-[9px] text-neutral-600 text-center">End Frame</div>
-                      <div className="aspect-video bg-black/40 rounded border border-neutral-800 flex items-center justify-center text-[8px] text-neutral-600">
+                      <button
+                        className="aspect-video bg-black/40 rounded border border-neutral-800 hover:border-violet-500/50 flex items-center justify-center text-[8px] text-neutral-600 w-full transition-colors"
+                        onClick={() => {
+                          setVxImageMode('start_end');
+                          setIsGenOpen(true);
+                        }}
+                      >
                         {vxEndImageId ? (
                           <img 
                             src={`http://127.0.0.1:8000/files/${media.find(m => m.id === vxEndImageId)?.path?.replace('project_data/', '')}`}
@@ -2151,23 +2213,16 @@ export default function App() {
                             alt="End"
                           />
                         ) : (
-                          'Optional'
+                          <div className="text-neutral-600">Click to select</div>
                         )}
-                      </div>
+                      </button>
                     </div>
                   </div>
                   
                   <button
                     className="button text-[10px] w-full bg-violet-500/20 hover:bg-violet-500/30 text-violet-300"
                     onClick={() => {
-                      // Auto-configure for continuity from last shot
-                      setIsContPrevFrame(true);
-                      setVxImageMode('start_end');
-                      setVxUsePrevLast(true);
-                      setVxStartImageId(null);
-                      setVxStartFromVideoId(null);
-                      setVxStartFramePath(null);
-                      setVxEndImageId(null);
+                      // Just open modal, don't auto-configure
                       setIsGenOpen(true);
                     }}
                   >
@@ -2256,6 +2311,12 @@ export default function App() {
                   <button
                     className="button w-full text-xs"
                     onClick={() => {
+                      // Pre-select this video for lip-sync
+                      const videoId = media.find(m => m.path === shot.file_path)?.id;
+                      if (videoId) {
+                        setLipMode('video');
+                        setLipVideoId(videoId);
+                      }
                       setIsLipOpen(true);
                       setLipOutputName(`${shot.shot_id}_lipsync`);
                     }}

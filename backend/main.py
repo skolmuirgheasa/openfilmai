@@ -825,7 +825,12 @@ async def api_optical_flow(req: OpticalFlowRequest):
         }
         add_media(req.project_id, media_entry)
         
+        # Add frames to media library too
+        add_media(req.project_id, {"id": merged_first.name, "type": "image", "path": rel_first, "url": f"/files/{req.project_id}/scenes/{req.scene_id}/shots/{merged_first.name}"})
+        add_media(req.project_id, {"id": merged_last.name, "type": "image", "path": rel_last, "url": f"/files/{req.project_id}/scenes/{req.scene_id}/shots/{merged_last.name}"})
+        
         # If replace_shots is True, replace the two shots with the merged one
+        # NOTE: Original clips remain in media library, only removed from timeline
         if req.replace_shots:
             # Get combined duration
             duration_a = shot_a.get("duration", 8)

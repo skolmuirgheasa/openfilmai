@@ -28,7 +28,8 @@ from .base import AIProvider, AIProviderError
 class WaveSpeedProvider(AIProvider):
     """Client for WaveSpeed InfiniteTalk REST API"""
 
-    SUBMIT_URL = "https://api.wavespeed.ai/api/v3/wavespeed-ai/infinitetalk"
+    SUBMIT_URL_IMAGE = "https://api.wavespeed.ai/api/v3/wavespeed-ai/infinitetalk"
+    SUBMIT_URL_VIDEO = "https://api.wavespeed.ai/api/v3/wavespeed-ai/infinitetalk/video-to-video"
     RESULT_URL = "https://api.wavespeed.ai/api/v3/predictions/{request_id}/result"
 
     def __init__(self, api_key: str):
@@ -68,18 +69,37 @@ class WaveSpeedProvider(AIProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "audio": self._file_to_data_url(audio_path, "audio/mpeg") if audio_path else None,
-            "image": self._file_to_data_url(image_path, "image/jpeg") if image_path else None,
-            "video": self._file_to_data_url(video_path, "video/mp4") if video_path else None,
-            "prompt": prompt or "",
-            "resolution": resolution or "720p",
-            "seed": seed if seed is not None else -1,
-        }
+        
+        # WaveSpeed has TWO different endpoints:
+        # 1. /infinitetalk - for image + audio (requires "image" field)
+        # 2. /infinitetalk/video-to-video - for video + audio (requires "video" field)
+        
+        if video_path:
+            # Use video-to-video endpoint
+            submit_url = self.SUBMIT_URL_VIDEO
+            payload = {
+                "audio": self._file_to_data_url(audio_path, "audio/mpeg"),
+                "video": self._file_to_data_url(video_path, "video/mp4"),
+                "prompt": prompt or "",
+                "resolution": resolution or "480p",
+                "seed": seed if seed is not None else -1,
+            }
+            log.info(f"WaveSpeed video-to-video: prompt len={len(payload['prompt'])}, resolution={payload['resolution']}")
+        else:
+            # Use image-to-video endpoint
+            submit_url = self.SUBMIT_URL_IMAGE
+            payload = {
+                "audio": self._file_to_data_url(audio_path, "audio/mpeg"),
+                "image": self._file_to_data_url(image_path, "image/jpeg"),
+                "prompt": prompt or "",
+                "resolution": resolution or "480p",
+                "seed": seed if seed is not None else -1,
+            }
+            log.info(f"WaveSpeed image-to-video: prompt len={len(payload['prompt'])}, resolution={payload['resolution']}")
+        
         # Remove None keys
         payload = {k: v for k, v in payload.items() if v is not None}
-        log.info(f"WaveSpeed submit payload: prompt len={len(payload['prompt'])}, resolution={payload['resolution']}")
-        submit_resp = self._make_request("POST", self.SUBMIT_URL, headers=headers, json=payload, timeout=120)
+        submit_resp = self._make_request("POST", submit_url, headers=headers, json=payload, timeout=120)
         submit_data = submit_resp.json()
         data_block = submit_data.get("data") or {}
         request_id = submit_data.get("requestId") or submit_data.get("id") or data_block.get("id")
