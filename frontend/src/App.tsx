@@ -25,6 +25,11 @@ export default function App() {
   const [isGenOpen, setIsGenOpen] = useState<boolean>(false);
   const [genPrompt, setGenPrompt] = useState<string>('a cinematic shot of waves at sunset');
   const [genAudio, setGenAudio] = useState<boolean>(false);
+  const [genMediaType, setGenMediaType] = useState<'video' | 'image'>('video');
+  const [replicateModel, setReplicateModel] = useState<string>('google/veo-3.1');
+  const [seedreamAspectRatio, setSeedreamAspectRatio] = useState<string>('16:9');
+  const [seedreamNumOutputs, setSeedreamNumOutputs] = useState<number>(1);
+  const [replicateRefImages, setReplicateRefImages] = useState<string[]>([]);
   const [isVoiceOpen, setIsVoiceOpen] = useState<boolean>(false);
   const [voiceText, setVoiceText] = useState<string>('');
   const [voiceId, setVoiceId] = useState<string>('');
@@ -566,14 +571,33 @@ export default function App() {
   }, [projectId]);
 
   useEffect(() => {
-    // Prefill reference images when a character with references is active on Vertex provider
-    if (provider !== 'vertex') return;
     const char = selectedCharacterId ? characters.find((c) => c.character_id === selectedCharacterId) : null;
+    
+    // Prefill reference images when a character with references is active
+    if (provider === 'vertex' || (provider === 'replicate' && genMediaType === 'image')) {
+      // Auto-populate reference images for both Vertex and Replicate image generation
+      if (selectedCharacterId && char?.reference_image_ids?.length) {
+        if (provider === 'vertex') {
+          setVxRefImageIds(char.reference_image_ids);
+        } else if (provider === 'replicate' && genMediaType === 'image') {
+          setReplicateRefImages(char.reference_image_ids);
+        }
+      } else {
+        if (provider === 'vertex') {
+          setVxRefImageIds([]);
+        } else if (provider === 'replicate' && genMediaType === 'image') {
+          setReplicateRefImages([]);
+        }
+      }
+    }
+    
+    // Only continue with Vertex-specific logic
+    if (provider !== 'vertex') return;
     if (char?.reference_image_ids?.length) {
       setVxImageMode('reference');
       setVxRefImageIds(char.reference_image_ids);
     }
-  }, [selectedCharacterId, provider, characters]);
+  }, [selectedCharacterId, provider, genMediaType, characters]);
 
   async function initProject() {
     setIsCreating(true);
@@ -1074,13 +1098,72 @@ export default function App() {
                     </Dialog.Description>
                     <div className="grid grid-cols-2 gap-3 mb-3">
                       <div>
+                        <label className="block text-xs text-neutral-400 mb-1">Media Type</label>
+                        <select className="field" value={genMediaType} onChange={(e) => {
+                          setGenMediaType(e.target.value as 'video' | 'image');
+                          if (e.target.value === 'image') {
+                            setProvider('replicate');
+                            setReplicateModel('bytedance/seedream-4');
+                          }
+                        }}>
+                          <option value="video">Video</option>
+                          <option value="image">Image</option>
+                        </select>
+                      </div>
+                      <div>
                         <label className="block text-xs text-neutral-400 mb-1">Provider</label>
-                        <select className="field" value={provider} onChange={(e) => setProvider(e.target.value as any)}>
-                          <option value="replicate">Replicate (Veo)</option>
+                        <select className="field" value={provider} onChange={(e) => setProvider(e.target.value as any)} disabled={genMediaType === 'image'}>
+                          <option value="replicate">Replicate</option>
                           <option value="vertex">Vertex (Veo 3.1)</option>
                         </select>
                       </div>
-                      <div className="flex items-end">
+                    </div>
+                    {provider === 'replicate' && (
+                      <div className="mb-3">
+                        <label className="block text-xs text-neutral-400 mb-1">Model</label>
+                        <select className="field" value={replicateModel} onChange={(e) => setReplicateModel(e.target.value)}>
+                          {genMediaType === 'video' ? (
+                            <>
+                              <option value="google/veo-3.1">Google Veo 3.1</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="bytedance/seedream-4">ByteDance Seedream-4</option>
+                            </>
+                          )}
+                        </select>
+                      </div>
+                    )}
+                    {genMediaType === 'image' && replicateModel === 'bytedance/seedream-4' && (
+                      <div className="grid grid-cols-2 gap-3 mb-3">
+                        <div>
+                          <label className="block text-xs text-neutral-400 mb-1">Aspect Ratio</label>
+                          <select className="field" value={seedreamAspectRatio} onChange={(e) => setSeedreamAspectRatio(e.target.value)}>
+                            <option value="4:3">4:3</option>
+                            <option value="16:9">16:9</option>
+                            <option value="21:9">21:9</option>
+                            <option value="1:1">1:1</option>
+                            <option value="2:3">2:3</option>
+                            <option value="3:2">3:2</option>
+                            <option value="9:16">9:16</option>
+                            <option value="9:21">9:21</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-neutral-400 mb-1">Number of Images</label>
+                          <input
+                            type="number"
+                            className="field"
+                            min="1"
+                            max="4"
+                            value={seedreamNumOutputs}
+                            onChange={(e) => setSeedreamNumOutputs(parseInt(e.target.value) || 1)}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {genMediaType === 'video' && (
+                      <div className="flex items-end mb-3">
                         <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
                           <input
                             type="checkbox"
@@ -1090,7 +1173,7 @@ export default function App() {
                           Generate audio (costs more; Veo default off)
                         </label>
                       </div>
-                    </div>
+                    )}
                     <div className="grid grid-cols-2 gap-3 mb-3">
                       <div>
                         <label className="block text-xs text-neutral-400 mb-1">Character</label>
@@ -1406,6 +1489,56 @@ export default function App() {
                         </div>
                       </div>
                     ) : null}
+                    {provider === 'replicate' && genMediaType === 'image' && (
+                      <div className="mb-3">
+                        <label className="block text-xs text-neutral-400 mb-1">Reference Images (optional - for character consistency)</label>
+                        <div className="text-[10px] text-neutral-500 mb-2">
+                          {selectedCharacter && selectedCharacter.reference_image_ids?.length ? (
+                            <span className="text-violet-400">Character "{selectedCharacter.name}" has {selectedCharacter.reference_image_ids.length} reference image(s) - will be used automatically</span>
+                          ) : (
+                            'Select images manually or choose a character with reference images'
+                          )}
+                        </div>
+                        <div className="grid grid-cols-4 gap-2 max-h-[200px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
+                          {media.filter((m) => m.type === 'image').length === 0 ? (
+                            <div className="col-span-4 text-xs text-neutral-500 text-center py-4">No images yet</div>
+                          ) : (
+                            media.filter((m) => m.type === 'image').map((m) => {
+                              const selected = replicateRefImages.includes(m.id);
+                              return (
+                                <button
+                                  key={m.id}
+                                  className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                    selected ? 'border-violet-500 ring-2 ring-violet-500/50' : 'border-neutral-700 hover:border-violet-400'
+                                  } cursor-pointer`}
+                                  onClick={() => {
+                                    setReplicateRefImages((prev) =>
+                                      selected ? prev.filter((id) => id !== m.id) : [...prev, m.id]
+                                    );
+                                  }}
+                                >
+                                  <img
+                                    src={`http://127.0.0.1:8000${m.url}`}
+                                    className="w-full h-full object-cover"
+                                    alt={m.id}
+                                  />
+                                  {selected ? (
+                                    <div className="absolute inset-0 bg-violet-500/20 flex items-center justify-center">
+                                      <div className="bg-violet-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
+                                        ✓
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                  <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-[8px] px-1 py-0.5 truncate">
+                                    {m.id}
+                                  </div>
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between mb-1">
                       <label className="block text-xs text-neutral-400">
                         Prompt {shotPromptHistory.length > 0 ? <span className="text-neutral-600">(↑↓ for history)</span> : null}
@@ -1567,24 +1700,34 @@ export default function App() {
                                 refImages = charRefPaths;
                               }
                             } else {
-                              // Replicate uses reference_frame only
-                              startFramePath = reference_frame;
+                              // Replicate
+                              if (genMediaType === 'image') {
+                                // For image generation, use reference images (from character or manual selection)
+                                refImages = charRefPaths || replicateRefImages.map(id => media.find(m => m.id === id)?.path).filter(Boolean) as string[];
+                                startFramePath = undefined;
+                              } else {
+                                // For video generation, use reference_frame only
+                                startFramePath = reference_frame;
+                              }
                             }
-                            jobId = startJob(`Generating shot ${selectedSceneId}`);
+                            jobId = startJob(`Generating ${genMediaType} ${selectedSceneId}`);
                             const payload = {
                               project_id: projectId,
                               scene_id: selectedSceneId,
                               prompt: promptWithStyle,
                               provider,
-                              model: provider === 'replicate' ? 'google/veo-3.1' : 'veo-3.1-fast-generate-preview',
-                              duration: 8,
-                              resolution: '1080p',
-                              aspect_ratio: '16:9',
-                              reference_frame: provider === 'replicate' ? startFramePath : undefined,
+                              media_type: genMediaType,
+                              model: provider === 'replicate' ? replicateModel : 'veo-3.1-fast-generate-preview',
+                              duration: genMediaType === 'video' ? 8 : undefined,
+                              resolution: genMediaType === 'video' ? '1080p' : undefined,
+                              aspect_ratio: genMediaType === 'image' && replicateModel === 'bytedance/seedream-4' ? seedreamAspectRatio : '16:9',
+                              reference_frame: provider === 'replicate' && genMediaType === 'video' ? startFramePath : undefined,
                               start_frame_path: provider === 'vertex' ? startFramePath : undefined,
                               end_frame_path: provider === 'vertex' ? endFramePath : undefined,
-                              reference_images: provider === 'vertex' ? refImages : undefined,
-                              generate_audio: provider === 'replicate' ? genAudio : false
+                              reference_images: (provider === 'vertex' || (provider === 'replicate' && genMediaType === 'image')) ? refImages : undefined,
+                              generate_audio: provider === 'replicate' && genMediaType === 'video' ? genAudio : false,
+                              num_outputs: genMediaType === 'image' && replicateModel === 'bytedance/seedream-4' ? seedreamNumOutputs : undefined,
+                              character_id: selectedCharacterId || undefined
                             };
                             console.log('Generate payload', payload);
                             const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
@@ -1602,16 +1745,26 @@ export default function App() {
                                 });
                                 setShotPromptHistoryIndex(-1);
                               }
-                              const url = `http://127.0.0.1:8000${data.file_url}`;
-                              setCurrentVideoUrl(url);
-                              setNowPlaying(url);
-                              setPlayError('');
-                              // refresh detail and media
-                              const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
-                              setSceneDetail(d.scene ?? null);
-                              await refreshMedia();
-                              setIsGenOpen(false);
-                              if (jobId) finishJob(jobId, 'done');
+                              
+                              if (genMediaType === 'image') {
+                                // For image generation, refresh media to show new images
+                                await refreshMedia();
+                                setIsGenOpen(false);
+                                if (jobId) finishJob(jobId, 'done');
+                                alert(`Generated ${data.images?.length || 1} image(s) successfully! Check the media library.`);
+                              } else {
+                                // For video generation, show the video
+                                const url = `http://127.0.0.1:8000${data.file_url}`;
+                                setCurrentVideoUrl(url);
+                                setNowPlaying(url);
+                                setPlayError('');
+                                // refresh detail and media
+                                const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
+                                setSceneDetail(d.scene ?? null);
+                                await refreshMedia();
+                                setIsGenOpen(false);
+                                if (jobId) finishJob(jobId, 'done');
+                              }
                             } else {
                               console.error('Generate failed', data);
                               if (jobId) finishJob(jobId, 'error', data.detail || `HTTP ${res.status}`);

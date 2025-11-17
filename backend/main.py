@@ -158,6 +158,7 @@ class ShotGenerateRequest(BaseModel):
     prompt: str
     provider: Optional[str] = "replicate"  # replicate | vertex
     model: Optional[str] = None
+    media_type: Optional[str] = "video"  # video | image
     reference_frame: Optional[str] = None  # path to frame image
     character_id: Optional[str] = None
     duration: Optional[int] = 8
@@ -167,6 +168,7 @@ class ShotGenerateRequest(BaseModel):
     end_frame_path: Optional[str] = None
     reference_images: Optional[List[str]] = None
     generate_audio: Optional[bool] = False
+    num_outputs: Optional[int] = 1  # For image generation (e.g., Seedream-4)
 
 
 @app.post("/ai/generate-shot")
@@ -221,17 +223,76 @@ def generate_shot(req: ShotGenerateRequest):
             # Default to Replicate
             s = read_settings()
             client_r = ReplicateClient(api_token=s.get("replicate_api_token"))
-            model_used = req.model or "google/veo-3.1"
-            output_url = client_r.generate_video(
-                model=model_used,
-                prompt=req.prompt,
-                first_frame_image=req.reference_frame,
-                duration=req.duration or 8,
-                resolution=req.resolution or "1080p",
-                aspect_ratio=req.aspect_ratio or "16:9",
-                generate_audio=bool(req.generate_audio),
-            )
-        # Download file
+            model_used = req.model or ("bytedance/seedream-4" if req.media_type == "image" else "google/veo-3.1")
+            
+            # Handle character reference images
+            ref_imgs = req.reference_images
+            if req.character_id and not ref_imgs:
+                char = get_character(req.project_id, req.character_id)
+                if char and char.get("reference_image_ids"):
+                    ref_imgs = []
+                    for img_id in char["reference_image_ids"]:
+                        media_item = next((m for m in list_media(req.project_id) if m.get("id") == img_id), None)
+                        if media_item:
+                            img_path = _normalize_path(media_item["path"])
+                            ref_imgs.append(str(img_path))
+            
+            # Normalize reference image paths
+            if ref_imgs:
+                ref_imgs = [str(_normalize_path(r)) if not Path(r).is_absolute() else r for r in ref_imgs]
+            
+            if req.media_type == "image":
+                # Image generation (e.g., Seedream-4)
+                output_urls = client_r.generate_image(
+                    model=model_used,
+                    prompt=req.prompt,
+                    reference_images=ref_imgs or None,
+                    aspect_ratio=req.aspect_ratio or "16:9",
+                    num_outputs=req.num_outputs or 1,
+                )
+                # For images, we'll save them to media/images and create image items
+                import requests
+                media_images_dir = PROJECT_DATA_DIR / req.project_id / "media" / "images"
+                media_images_dir.mkdir(parents=True, exist_ok=True)
+                
+                saved_images = []
+                for idx, img_url in enumerate(output_urls):
+                    img_filename = f"{shot_id}_{idx}.jpg" if len(output_urls) > 1 else f"{shot_id}.jpg"
+                    img_path = media_images_dir / img_filename
+                    
+                    # Download image
+                    with requests.get(img_url, stream=True, timeout=120) as r:
+                        r.raise_for_status()
+                        with open(img_path, "wb") as f:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                    
+                    rel_img = str(img_path.relative_to(PROJECT_DATA_DIR))
+                    add_media(req.project_id, {
+                        "id": img_filename,
+                        "type": "image",
+                        "path": f"project_data/{rel_img}",
+                        "url": f"/files/{rel_img}"
+                    })
+                    saved_images.append(f"project_data/{rel_img}")
+                
+                # Return first image as the "shot" (for compatibility)
+                return {"status": "ok", "shot_id": shot_id, "images": saved_images, "model": model_used}
+            else:
+                # Video generation
+                output_url = client_r.generate_video(
+                    model=model_used,
+                    prompt=req.prompt,
+                    first_frame_image=req.reference_frame,
+                    reference_images=ref_imgs or None,
+                    duration=req.duration or 8,
+                    resolution=req.resolution or "1080p",
+                    aspect_ratio=req.aspect_ratio or "16:9",
+                    generate_audio=bool(req.generate_audio),
+                )
+        
+        # Download video file
         import requests, os
         video_path = dirs["shots"] / f"{shot_id}.mp4"
         parsed = urlparse(str(output_url))
