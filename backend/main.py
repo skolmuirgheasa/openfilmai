@@ -1003,6 +1003,41 @@ def api_set_settings(body: SettingsBody):
     return {"status": "ok"}
 
 
+class RevealFileRequest(BaseModel):
+    file_path: str
+
+
+@app.post("/storage/reveal-file")
+def api_reveal_file(body: RevealFileRequest):
+    """
+    Reveal a file in the system file manager (Finder on macOS, Explorer on Windows, etc.)
+    """
+    import platform
+    
+    # Normalize the path using existing helper
+    abs_path = _normalize_path(body.file_path)
+    
+    if not abs_path.exists():
+        return {"status": "error", "detail": f"File not found: {abs_path}"}
+    
+    try:
+        system = platform.system()
+        if system == "Darwin":  # macOS
+            # Use 'open -R' to reveal file in Finder
+            subprocess.run(["open", "-R", str(abs_path)], check=True)
+        elif system == "Windows":
+            # Use explorer to select file
+            subprocess.run(["explorer", "/select,", str(abs_path)], check=True)
+        else:  # Linux and others
+            # Try xdg-open to open parent directory
+            parent_dir = abs_path.parent
+            subprocess.run(["xdg-open", str(parent_dir)], check=True)
+        
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 # Last frame info for a shot
 @app.get("/storage/{project_id}/scenes/{scene_id}/shots/{shot_id}/last-frame")
 def api_last_frame(project_id: str, scene_id: str, shot_id: str):

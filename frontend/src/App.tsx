@@ -159,7 +159,7 @@ export default function App() {
   }
   const [projectId, setProjectId] = useState<string>(() => {
     const stored = localStorage.getItem('projectId');
-    const initial = stored || 'vampyre';
+    const initial = stored || 'default';
     localStorage.setItem('projectId', initial);
     return initial;
   });
@@ -189,13 +189,17 @@ export default function App() {
         return;
       }
       if (cancelled) return;
-      // Prefer 'vampyre' automatically if it exists
+      // Use first available project if current project doesn't exist
       try {
         const projs = await fetch('http://127.0.0.1:8000/storage/projects').then((r) => r.json());
-        if (!cancelled && Array.isArray(projs?.projects) && projs.projects.includes('vampyre') && projectId !== 'vampyre') {
-          localStorage.setItem('projectId', 'vampyre');
-          setProjectId('vampyre');
-          return;
+        if (!cancelled && Array.isArray(projs?.projects) && projs.projects.length > 0) {
+          // If current project doesn't exist, switch to first available
+          if (!projs.projects.includes(projectId)) {
+            const firstProject = projs.projects[0];
+            localStorage.setItem('projectId', firstProject);
+            setProjectId(firstProject);
+            return;
+          }
         }
       } catch (_) {}
       // Ensure project exists before listing
@@ -2235,6 +2239,26 @@ export default function App() {
                       <div className="absolute top-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded">
                         {duration}s
                       </div>
+                      {sh.file_path && (
+                        <button
+                          className="absolute bottom-1 right-1 bg-black/80 hover:bg-black/90 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              await fetch('http://127.0.0.1:8000/storage/reveal-file', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ file_path: sh.file_path })
+                              });
+                            } catch (err) {
+                              console.error('Failed to reveal file:', err);
+                            }
+                          }}
+                          title="Reveal in Finder"
+                        >
+                          <FolderOpen className="w-3 h-3" />
+                        </button>
+                      )}
                     </div>
                     <div className="p-2 space-y-1">
                       <div className="text-[10px] text-neutral-400 truncate max-w-full" title={sh.shot_id}>{sh.shot_id}</div>

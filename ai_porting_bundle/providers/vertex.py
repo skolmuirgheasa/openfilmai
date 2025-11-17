@@ -16,12 +16,13 @@ class VertexVeoProvider(AIProvider):
     DEFAULT_MODEL = "veo-3.1-generate-preview"
     BASE_URL = "https://us-central1-aiplatform.googleapis.com/v1"
 
-    def __init__(self, credentials_path: str, project_id: str, location: str = "us-central1", model: str = None):
+    def __init__(self, credentials_path: str, project_id: str, location: str = "us-central1", model: str = None, temp_bucket: str = None):
         super().__init__(api_key=None)
         self.credentials_path = (credentials_path or "").strip()
         self.project_id = (project_id or "").strip()
         self.location = (location or "us-central1").strip()
         self.model = (model or self.DEFAULT_MODEL).strip()
+        self.temp_bucket = temp_bucket.strip() if temp_bucket and temp_bucket.strip() else None
         self._credentials = None
         self._token = None
         self._token_expiry = 0
@@ -172,8 +173,8 @@ class VertexVeoProvider(AIProvider):
             # Initialize GCS client
             client = storage.Client(project=self.project_id, credentials=credentials)
             
-            # Use or create a bucket for temporary uploads
-            bucket_name = f"{self.project_id}-openshot-temp"
+            # Use configured bucket or create a default one for temporary uploads
+            bucket_name = self.temp_bucket or f"{self.project_id}-openfilmai-temp"
             try:
                 bucket = client.get_bucket(bucket_name)
             except Exception:
