@@ -66,6 +66,18 @@ export default function App() {
   const [voiceTTSHistoryIndex, setVoiceTTSHistoryIndex] = useState<number>(-1);
   const [lipSyncPromptHistory, setLipSyncPromptHistory] = useState<string[]>([]);
   const [lipSyncPromptHistoryIndex, setLipSyncPromptHistoryIndex] = useState<number>(-1);
+  
+  // Prompt templates
+  const [promptTemplates, setPromptTemplates] = useState<{name: string; prompt: string}[]>(() => {
+    const stored = localStorage.getItem('promptTemplates');
+    return stored ? JSON.parse(stored) : [
+      { name: "Cinematic Shot", prompt: "A cinematic shot, 35mm film, shallow depth of field, professional color grading" },
+      { name: "Character Close-up", prompt: "Close-up shot of [character], emotional expression, soft lighting, film grain" },
+      { name: "Establishing Shot", prompt: "Wide establishing shot, golden hour lighting, atmospheric, cinematic composition" },
+      { name: "Action Sequence", prompt: "Dynamic action shot, fast motion, dramatic lighting, high contrast" },
+    ];
+  });
+  const [isTemplatesOpen, setIsTemplatesOpen] = useState<boolean>(false);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
   const [isCharacterModalOpen, setIsCharacterModalOpen] = useState<boolean>(false);
@@ -85,9 +97,19 @@ export default function App() {
   const [vxEndFromVideoId, setVxEndFromVideoId] = useState<string | null>(null);
   const [vxEndFramePath, setVxEndFramePath] = useState<string | null>(null);
   const [vxImageMode, setVxImageMode] = useState<'none' | 'start_end' | 'reference'>('none');
-  const imageMedia = media.filter((m) => m.type === 'image');
-  const audioMedia = media.filter((m) => m.type === 'audio');
-  const videoMedia = media.filter((m) => m.type === 'video');
+  // Sort media by ID (which contains timestamp) - newest first
+  const sortedMedia = [...media].sort((a, b) => {
+    // Extract timestamp from ID (e.g., "1763077360_voice.mp3" -> 1763077360)
+    const getTimestamp = (id: string) => {
+      const match = id.match(/^(\d+)/);
+      return match ? parseInt(match[1]) : 0;
+    };
+    return getTimestamp(b.id) - getTimestamp(a.id);
+  });
+  
+  const imageMedia = sortedMedia.filter((m) => m.type === 'image');
+  const audioMedia = sortedMedia.filter((m) => m.type === 'audio');
+  const videoMedia = sortedMedia.filter((m) => m.type === 'video');
   const selectedCharacter = selectedCharacterId ? characters.find((c) => c.character_id === selectedCharacterId) : null;
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
@@ -252,7 +274,28 @@ export default function App() {
 
   async function refreshMedia() {
     const m = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`).then((r) => r.json());
-    setMedia(m.media ?? []);
+    // Sort by most recent first (newest at top)
+    const sorted = (m.media ?? []).sort((a: any, b: any) => {
+      // Extract timestamp from filename - try multiple patterns
+      const getTimestamp = (item: any) => {
+        // Pattern 1: "1763084012_video.mp4" or "1763084012.mp4"
+        const match1 = item.id?.match(/^(\d{10,13})[_\.]/);
+        if (match1) return parseInt(match1[1]);
+        
+        // Pattern 2: "wavespeed_1763084012.mp4" or "scene_002_shot_1763084012.mp4"
+        const match2 = item.id?.match(/_(\d{10,13})[_\.]/);
+        if (match2) return parseInt(match2[1]);
+        
+        // Pattern 3: Any 10-13 digit number in the filename
+        const match3 = item.id?.match(/(\d{10,13})/);
+        if (match3) return parseInt(match3[1]);
+        
+        // Fallback: use 0 (will sort to end)
+        return 0;
+      };
+      return getTimestamp(b) - getTimestamp(a);
+    });
+    setMedia(sorted);
   }
 
   async function refreshCharacters() {
@@ -276,9 +319,11 @@ export default function App() {
     setJobs((jobs) =>
       jobs.map((job) => (job.id === id ? { ...job, status, detail } : job))
     );
+    // Auto-dismiss after 3 seconds for success, 8 seconds for errors
+    const dismissDelay = status === 'done' ? 3000 : 8000;
     setTimeout(() => {
       setJobs((jobs) => jobs.filter((job) => job.id !== id));
-    }, 4000);
+    }, dismissDelay);
   }
 
   function openCharacterModal(char?: Character) {
@@ -298,7 +343,7 @@ export default function App() {
     setIsCharacterModalOpen(true);
   }
 
-  function MediaPreviewCard({
+  const MediaPreviewCard = React.memo(({
     item,
     selected,
     onSelect,
@@ -306,29 +351,30 @@ export default function App() {
     item: any;
     selected: boolean;
     onSelect: () => void;
-  }) {
+  }) => {
     const url = `http://127.0.0.1:8000${item.url}`;
     return (
       <button
         className={`rounded-lg border p-1 w-24 h-28 flex flex-col items-center justify-center text-[10px] ${
-          selected ? 'border-violet-500 text-violet-200' : 'border-neutral-700 text-neutral-300'
+          selected ? 'border-violet-500 bg-violet-500/10 text-violet-200' : 'border-neutral-700 text-neutral-300 hover:border-violet-500/50'
         }`}
         onClick={onSelect}
+        title={item.id}
       >
         {item.type === 'image' ? (
-          <img src={url} className="w-full h-16 object-cover rounded" />
+          <img src={url} className="w-full h-16 object-cover rounded" alt={item.id} />
         ) : item.type === 'video' ? (
           <video src={url} className="w-full h-16 object-cover rounded" muted playsInline />
         ) : (
           <div className="w-full h-16 bg-neutral-900/60 rounded flex items-center justify-center text-[12px]">
-            Audio
+            🎵
           </div>
         )}
-        <span className="mt-1 truncate w-full">{item.id}</span>
-        {selected ? <span className="text-violet-300">✓</span> : null}
+        <span className="mt-1 truncate w-full text-[9px]">{item.id}</span>
+        {selected ? <span className="text-violet-300 font-bold">✓</span> : null}
       </button>
     );
-  }
+  });
 
   async function handleSaveCharacter() {
     const payload = {
@@ -1154,137 +1200,219 @@ export default function App() {
                         <>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
-                            <label className="block text-xs text-neutral-400 mb-1">Start frame (image)</label>
-                            <select
-                              className="field"
-                              disabled={vxUsePrevLast}
-                              value={vxStartImageId ?? ''}
-                              onChange={(e) => {
-                                setVxStartImageId(e.target.value || null);
-                                if (e.target.value) {
-                                  setVxStartFromVideoId(null);
-                                  setVxStartFramePath(null);
-                                }
-                              }}
-                            >
-                              <option value="">None</option>
-                              {media.filter((m) => m.type === 'image').map((m) => (
-                                <option key={m.id} value={m.id}>{m.id}</option>
-                              ))}
-                            </select>
-                            {/* Preview */}
-                            {vxStartImageId ? (
-                              <div className="mt-2">
-                                <img
-                                  src={`http://127.0.0.1:8000${media.find(m => m.id === vxStartImageId)?.url ?? ''}`}
-                                  className="w-full h-24 object-cover rounded border border-neutral-800"
-                                />
-                              </div>
+                            <label className="block text-xs text-neutral-400 mb-1">Start frame (select image)</label>
+                            <div className="grid grid-cols-3 gap-2 max-h-[120px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
+                              {media.filter((m) => m.type === 'image').length === 0 ? (
+                                <div className="col-span-3 text-xs text-neutral-500 text-center py-2">No images</div>
+                              ) : (
+                                media.filter((m) => m.type === 'image').map((m) => {
+                                  const selected = vxStartImageId === m.id;
+                                  return (
+                                    <button
+                                      key={m.id}
+                                      disabled={vxUsePrevLast}
+                                      className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                        selected ? 'border-violet-500 ring-2 ring-violet-500/50' : 'border-neutral-700 hover:border-violet-400'
+                                      } ${vxUsePrevLast ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
+                                      onClick={() => {
+                                        if (!vxUsePrevLast) {
+                                          setVxStartImageId(m.id);
+                                          setVxStartFromVideoId(null);
+                                          setVxStartFramePath(null);
+                                        }
+                                      }}
+                                    >
+                                      <img
+                                        src={`http://127.0.0.1:8000${m.url}`}
+                                        className="w-full h-full object-cover"
+                                        alt={m.id}
+                                      />
+                                      {selected ? (
+                                        <div className="absolute inset-0 bg-violet-500/20 flex items-center justify-center">
+                                          <div className="bg-violet-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                            ✓
+                                          </div>
+                                        </div>
+                                      ) : null}
+                                      <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-[8px] px-1 py-0.5 truncate">
+                                        {m.id}
+                                      </div>
+                                    </button>
+                                  );
+                                })
+                              )}
+                            </div>
+                            <label className="block text-xs text-neutral-400 mb-1 mt-3">OR extract from video's last frame</label>
+                            <div className="grid grid-cols-3 gap-2 max-h-[120px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
+                              {media.filter((m) => m.type === 'video').length === 0 ? (
+                                <div className="col-span-3 text-xs text-neutral-500 text-center py-2">No videos</div>
+                              ) : (
+                                media.filter((m) => m.type === 'video').map((m) => {
+                                  const selected = vxStartFromVideoId === m.id;
+                                  return (
+                                    <button
+                                      key={m.id}
+                                      disabled={vxUsePrevLast}
+                                      className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                        selected ? 'border-violet-500 ring-2 ring-violet-500/50' : 'border-neutral-700 hover:border-violet-400'
+                                      } ${vxUsePrevLast ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
+                                      onClick={() => {
+                                        if (!vxUsePrevLast) {
+                                          setVxStartFromVideoId(m.id);
+                                          setVxStartImageId(null);
+                                        }
+                                      }}
+                                    >
+                                      <img
+                                        src={`http://127.0.0.1:8000${m.url}`}
+                                        className="w-full h-full object-cover"
+                                        alt={m.id}
+                                      />
+                                      {selected ? (
+                                        <div className="absolute inset-0 bg-violet-500/20 flex items-center justify-center">
+                                          <div className="bg-violet-500 text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                            ✓
+                                          </div>
+                                        </div>
+                                      ) : null}
+                                    </button>
+                                  );
+                                })
+                              )}
+                            </div>
+                            {vxStartFromVideoId ? (
+                              <button
+                                className="button text-[11px] px-2 py-1 mt-2 w-full"
+                                onClick={async () => {
+                                  const vid = media.find(m => m.id === vxStartFromVideoId);
+                                  if (!vid) return;
+                                  const r = await fetch('http://127.0.0.1:8000/frames/last', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ project_id: projectId, video_path: vid.path })
+                                  });
+                                  const d = await r.json();
+                                  if (d.status === 'ok') {
+                                    setVxStartFramePath(d.image_path);
+                                    setVxImageMode('start_end');
+                                  } else {
+                                    alert(d.detail || 'Failed to extract last frame');
+                                  }
+                                }}
+                              >
+                                Extract as start frame
+                              </button>
                             ) : null}
-                            <label className="block text-xs text-neutral-400 mb-1 mt-3">OR Start from video's last frame</label>
-                            <select
-                              className="field"
-                              disabled={vxUsePrevLast}
-                              value={vxStartFromVideoId ?? ''}
-                              onChange={(e) => {
-                                setVxStartFromVideoId(e.target.value || null);
-                                if (e.target.value) {
-                                  setVxStartImageId(null);
-                                }
-                              }}
-                            >
-                              <option value="">None</option>
-                              {media.filter((m) => m.type === 'video').map((m) => (
-                                <option key={m.id} value={m.id}>{m.id}</option>
-                              ))}
-                            </select>
-                            <button
-                              className="button text-[11px] px-2 py-1 mt-2"
-                              disabled={!vxStartFromVideoId}
-                              onClick={async () => {
-                                const vid = media.find(m => m.id === vxStartFromVideoId);
-                                if (!vid) return;
-                                const r = await fetch('http://127.0.0.1:8000/frames/last', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ project_id: projectId, video_path: vid.path })
-                                });
-                                const d = await r.json();
-                                if (d.status === 'ok') {
-                                  setVxStartFramePath(d.image_path);
-                                  setVxImageMode('start_end');
-                                } else {
-                                  alert(d.detail || 'Failed to extract last frame');
-                                }
-                              }}
-                            >
-                              Extract as start
-                            </button>
                             {vxStartFramePath ? (
                               <div className="mt-2">
-                                <div className="text-[11px] text-neutral-400 mb-1">Extracted start frame</div>
+                                <div className="text-[11px] text-neutral-400 mb-1">✓ Extracted start frame</div>
                                 <img
                                   src={`http://127.0.0.1:8000/files/${vxStartFramePath.replace('project_data/', '')}`}
-                                  className="w-full h-24 object-cover rounded border border-neutral-800"
+                                  className="w-full h-24 object-cover rounded border border-violet-500"
                                 />
                               </div>
                             ) : null}
                           </div>
                           <div>
-                            <label className="block text-xs text-neutral-400 mb-1">End frame (image, optional)</label>
-                            <select
-                              className="field"
-                              disabled={false}
-                              value={vxEndImageId ?? ''}
-                              onChange={(e) => setVxEndImageId(e.target.value || null)}
-                            >
-                              <option value="">None</option>
-                              {media.filter((m) => m.type === 'image').map((m) => (
-                                <option key={m.id} value={m.id}>{m.id}</option>
-                              ))}
-                            </select>
-                            <div className="text-[10px] text-neutral-500 mt-1">
+                            <label className="block text-xs text-neutral-400 mb-1">End frame (optional)</label>
+                            <div className="text-[10px] text-neutral-500 mb-2">
                               Note: End frame requires a start frame (for interpolation)
                             </div>
-                            {vxEndImageId ? (
-                              <div className="mt-2">
-                                <img
-                                  src={`http://127.0.0.1:8000${media.find(m => m.id === vxEndImageId)?.url ?? ''}`}
-                                  className="w-full h-24 object-cover rounded border border-neutral-800"
-                                />
-                              </div>
-                            ) : null}
+                            <div className="grid grid-cols-3 gap-2 max-h-[120px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
+                              {media.filter((m) => m.type === 'image').length === 0 ? (
+                                <div className="col-span-3 text-xs text-neutral-500 text-center py-2">No images</div>
+                              ) : (
+                                media.filter((m) => m.type === 'image').map((m) => {
+                                  const selected = vxEndImageId === m.id;
+                                  return (
+                                    <button
+                                      key={m.id}
+                                      className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                        selected ? 'border-violet-500 ring-2 ring-violet-500/50' : 'border-neutral-700 hover:border-violet-400'
+                                      } cursor-pointer`}
+                                      onClick={() => setVxEndImageId(selected ? null : m.id)}
+                                    >
+                                      <img
+                                        src={`http://127.0.0.1:8000${m.url}`}
+                                        className="w-full h-full object-cover"
+                                        alt={m.id}
+                                      />
+                                      {selected ? (
+                                        <div className="absolute inset-0 bg-violet-500/20 flex items-center justify-center">
+                                          <div className="bg-violet-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                            ✓
+                                          </div>
+                                        </div>
+                                      ) : null}
+                                      <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-[8px] px-1 py-0.5 truncate">
+                                        {m.id}
+                                      </div>
+                                    </button>
+                                  );
+                                })
+                              )}
+                            </div>
                           </div>
                         </div>
                         </>
                         ) : null}
                         <div>
                           <label className="block text-xs text-neutral-400 mb-1">Reference images (mutually exclusive with start/end)</label>
-                          <div className="flex flex-wrap gap-2">
-                            {media.filter((m) => m.type === 'image').map((m) => {
-                              const selected = vxRefImageIds.includes(m.id);
-                              return (
-                                <button
-                                  key={m.id}
-                                  disabled={vxImageMode !== 'reference'}
-                                  className={`button text-[11px] px-2 py-1 ${selected ? 'border-violet-500' : ''}`}
-                                  onClick={() => {
-                                    setVxRefImageIds((prev) =>
-                                      selected ? prev.filter((id) => id !== m.id) : [...prev, m.id]
-                                    );
-                                  }}
-                                >
-                                  {selected ? '✓ ' : ''}{m.id}
-                                </button>
-                              );
-                            })}
+                          <div className="grid grid-cols-4 gap-2 max-h-[200px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
+                            {media.filter((m) => m.type === 'image').length === 0 ? (
+                              <div className="col-span-4 text-xs text-neutral-500 text-center py-4">No images yet</div>
+                            ) : (
+                              media.filter((m) => m.type === 'image').map((m) => {
+                                const selected = vxRefImageIds.includes(m.id);
+                                return (
+                                  <button
+                                    key={m.id}
+                                    disabled={vxImageMode !== 'reference'}
+                                    className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                      selected ? 'border-violet-500 ring-2 ring-violet-500/50' : 'border-neutral-700 hover:border-violet-400'
+                                    } ${vxImageMode !== 'reference' ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
+                                    onClick={() => {
+                                      if (vxImageMode === 'reference') {
+                                        setVxRefImageIds((prev) =>
+                                          selected ? prev.filter((id) => id !== m.id) : [...prev, m.id]
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    <img
+                                      src={`http://127.0.0.1:8000${m.url}`}
+                                      className="w-full h-full object-cover"
+                                      alt={m.id}
+                                    />
+                                    {selected ? (
+                                      <div className="absolute inset-0 bg-violet-500/20 flex items-center justify-center">
+                                        <div className="bg-violet-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
+                                          ✓
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                    <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-[8px] px-1 py-0.5 truncate">
+                                      {m.id}
+                                    </div>
+                                  </button>
+                                );
+                              })
+                            )}
                           </div>
                         </div>
                       </div>
                     ) : null}
-                    <label className="block text-xs text-neutral-400 mb-1">
-                      Prompt {shotPromptHistory.length > 0 ? <span className="text-neutral-600">(↑↓ for history)</span> : null}
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs text-neutral-400">
+                        Prompt {shotPromptHistory.length > 0 ? <span className="text-neutral-600">(↑↓ for history)</span> : null}
+                      </label>
+                      <button
+                        className="text-[10px] text-violet-400 hover:text-violet-300"
+                        onClick={() => setIsTemplatesOpen(true)}
+                      >
+                        📝 Templates
+                      </button>
+                    </div>
                     <textarea
                       className="field h-28"
                       value={genPrompt}
@@ -1312,9 +1440,51 @@ export default function App() {
                         }
                       }}
                     />
-                    <label className="mt-3 inline-flex items-center gap-2 text-sm text-neutral-300">
-                      <input type="checkbox" checked={isContPrevFrame} onChange={(e) => setIsContPrevFrame(e.target.checked)} />
-                      Use last frame of previous shot as reference
+                    <label className="mt-3 inline-flex items-center gap-2 text-sm text-neutral-300 cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        checked={vxUsePrevLast} 
+                        onChange={async (e) => {
+                          const checked = e.target.checked;
+                          setVxUsePrevLast(checked);
+                          
+                          if (checked && vxImageMode === 'start_end') {
+                            // Auto-extract last frame from previous shot
+                            const shots = sceneDetail?.shots || [];
+                            if (shots.length > 0) {
+                              const lastShot = shots[shots.length - 1];
+                              if (lastShot.file_path) {
+                                try {
+                                  const r = await fetch('http://127.0.0.1:8000/frames/last', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ 
+                                      project_id: projectId, 
+                                      video_path: lastShot.file_path 
+                                    })
+                                  });
+                                  const d = await r.json();
+                                  if (d.status === 'ok') {
+                                    setVxStartFramePath(d.image_path);
+                                    // Clear conflicting selections
+                                    setVxStartImageId(null);
+                                    setVxStartFromVideoId(null);
+                                  } else {
+                                    alert(d.detail || 'Failed to extract last frame');
+                                  }
+                                } catch (e) {
+                                  console.error('Failed to extract frame:', e);
+                                }
+                              } else {
+                                alert('Previous shot has no video file');
+                              }
+                            } else {
+                              alert('No previous shot exists');
+                            }
+                          }
+                        }} 
+                      />
+                      Use previous shot's last frame as start
                     </label>
                     <div className="mt-4 flex justify-end gap-2">
                       <Dialog.Close asChild>
@@ -1602,20 +1772,9 @@ export default function App() {
                 open={isLipOpen}
                 onOpenChange={(o) => {
                   setIsLipOpen(o);
-                  if (o) {
-                    setLipMode('video');
-                    const latestVideo = [...media].reverse().find((m) => m.type === 'video');
-                    const latestAudio = [...media].reverse().find((m) => m.type === 'audio');
-                    const latestImage = [...media].reverse().find((m) => m.type === 'image');
-                    setLipVideoId(latestVideo?.id ?? null);
-                    setLipAudioId(latestAudio?.id ?? null);
-                    setLipImageId(latestImage?.id ?? null);
-                    setLipPrompt('');
-                    setLipOutputName('');
-                  } else {
-                    setLipVideoId(null);
-                    setLipAudioId(null);
-                    setLipImageId(null);
+                  if (!o) {
+                    // Only clear if not pre-selected by clicking "Lip" button
+                    // The button handlers will set these before opening
                   }
                 }}
               >
@@ -1667,7 +1826,17 @@ export default function App() {
                       </div>
                     )}
                     <div className="mt-3">
-                      <div className="text-xs text-neutral-400 mb-1">Audio</div>
+                      <div className="text-xs text-neutral-400 mb-1 flex items-center justify-between">
+                        <span>Audio</span>
+                        {lipAudioId && (() => {
+                          const selectedAudio = media.find(m => m.id === lipAudioId);
+                          return selectedAudio ? (
+                            <audio controls className="h-6 max-w-[200px]">
+                              <source src={`http://127.0.0.1:8000${selectedAudio.url}`} />
+                            </audio>
+                          ) : null;
+                        })()}
+                      </div>
                       <div className="flex flex-wrap gap-2 max-h-[120px] overflow-y-auto">
                         {audioMedia.length === 0 ? (
                           <div className="text-xs text-neutral-500">No audio files yet.</div>
@@ -1719,7 +1888,7 @@ export default function App() {
                         onClick={async () => {
                           const jobId = startJob(lipMode === 'video' ? 'Lip-sync video (may take 5-30 min)' : 'Lip-sync image (may take 5-30 min)');
                           try {
-                            const audioItem = media.find((m) => m.media_id === lipAudioId);
+                            const audioItem = media.find((m) => m.id === lipAudioId);
                             if (!audioItem) {
                               finishJob(jobId, 'error', 'Select audio');
                               alert('Select audio file.');
@@ -1727,7 +1896,7 @@ export default function App() {
                             }
                             const body: any = {
                               project_id: projectId,
-                              audio_wav_path: audioItem.file_path,
+                              audio_wav_path: audioItem.path,
                               prompt: lipPrompt || undefined,
                               filename: lipOutputName || undefined
                             };
@@ -1735,22 +1904,22 @@ export default function App() {
                             
                             if (lipMode === 'video') {
                               endpoint = 'http://127.0.0.1:8000/ai/lipsync/video';
-                              const videoItem = media.find((m) => m.media_id === lipVideoId);
+                              const videoItem = media.find((m) => m.id === lipVideoId);
                               if (!videoItem) {
                                 finishJob(jobId, 'error', 'Select video');
                                 alert('Select a video clip.');
                                 return;
                               }
-                              body.video_path = videoItem.file_path;
+                              body.video_path = videoItem.path;
                             } else {
                               endpoint = 'http://127.0.0.1:8000/ai/lipsync/image';
-                              const imageItem = media.find((m) => m.media_id === lipImageId);
+                              const imageItem = media.find((m) => m.id === lipImageId);
                               if (!imageItem) {
                                 finishJob(jobId, 'error', 'Select image');
                                 alert('Select an image.');
                                 return;
                               }
-                              body.image_path = imageItem.file_path;
+                              body.image_path = imageItem.path;
                             }
                             console.log('Starting lip-sync request:', endpoint, body);
                             
@@ -1834,6 +2003,33 @@ export default function App() {
                 }}
               >
                 <Play className="w-4 h-4" /> Play Scene
+              </button>
+              <button
+                className="button text-xs"
+                onClick={async () => {
+                  const jobId = startJob('Fixing video formats...');
+                  try {
+                    const r = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/fix-formats`, {
+                      method: 'POST'
+                    });
+                    const d = await r.json();
+                    if (d.status === 'ok') {
+                      await refreshMedia();
+                      finishJob(jobId, 'done', `Fixed ${d.fixed} videos`);
+                      if (d.fixed > 0) {
+                        alert(`Fixed ${d.fixed} video(s) for browser compatibility!`);
+                      } else {
+                        alert('All videos are already compatible!');
+                      }
+                    } else {
+                      finishJob(jobId, 'error', 'Failed to fix formats');
+                    }
+                  } catch (e: any) {
+                    finishJob(jobId, 'error', e.message);
+                  }
+                }}
+              >
+                🔧 Fix Video Formats
               </button>
               <button
                 className="button disabled:opacity-50"
@@ -1970,10 +2166,16 @@ export default function App() {
                     onDragOver={(e) => {
                       e.preventDefault();
                       e.dataTransfer.dropEffect = 'move';
+                      // Visual feedback: highlight drop target
+                      e.currentTarget.classList.add('ring-2', 'ring-violet-400');
+                    }}
+                    onDragLeave={(e) => {
+                      e.currentTarget.classList.remove('ring-2', 'ring-violet-400');
                     }}
                     onDrop={async (e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      e.currentTarget.classList.remove('ring-2', 'ring-violet-400');
                       if (!draggedShotId || draggedShotId === sh.shot_id) return;
                       
                       // Reorder shots by swapping positions
@@ -2052,8 +2254,13 @@ export default function App() {
                           onClick={(e) => {
                             e.stopPropagation();
                             // Pre-select this video for lip-sync
-                            const videoId = media.find(m => m.file_path === sh.file_path)?.media_id;
-                            console.log('Lip button clicked for shot:', sh.shot_id, 'file_path:', sh.file_path, 'found videoId:', videoId);
+                            // Match by path (exact or normalized)
+                            const videoId = media.find(m => {
+                              const mPath = m.path?.replace('project_data/', '');
+                              const shPath = sh.file_path?.replace('project_data/', '');
+                              return mPath === shPath || m.path === sh.file_path;
+                            })?.id;
+                            console.log('Lip button clicked for shot:', sh.shot_id, 'file_path:', sh.file_path, 'found videoId:', videoId, 'media:', media.map(m => ({ id: m.id, path: m.path })));
                             if (videoId) {
                               setLipMode('video');
                               setLipVideoId(videoId);
@@ -2085,18 +2292,45 @@ export default function App() {
                           className="button text-[9px] px-1.5 py-0.5 w-full bg-violet-500/20 hover:bg-violet-500/30 text-violet-300 mt-1"
                           onClick={async (e) => {
                             e.stopPropagation();
-                            // Check if this shot has a last frame
-                            if (!sh.last_frame_path) {
-                              alert('This shot has no last frame extracted yet.');
+                            // Extract last frame if missing
+                            if (!sh.last_frame_path && sh.file_path) {
+                              try {
+                                const r = await fetch('http://127.0.0.1:8000/frames/last', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ 
+                                    project_id: projectId, 
+                                    video_path: sh.file_path 
+                                  })
+                                });
+                                const d = await r.json();
+                                if (d.status === 'ok') {
+                                  // Refresh scene to get updated shot with last_frame_path
+                                  const sceneRes = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`);
+                                  const sceneData = await sceneRes.json();
+                                  setSceneDetail(sceneData.scene ?? null);
+                                  setVxStartFramePath(d.image_path);
+                                } else {
+                                  alert(d.detail || 'Failed to extract last frame');
+                                  return;
+                                }
+                              } catch (err) {
+                                alert('Failed to extract frame');
+                                return;
+                              }
+                            } else if (sh.last_frame_path) {
+                              setVxStartFramePath(sh.last_frame_path);
+                            } else {
+                              alert('This shot has no video file');
                               return;
                             }
+                            
                             // Auto-configure for continuity from THIS shot
                             setIsContPrevFrame(true);
                             setVxImageMode('start_end');
                             setVxUsePrevLast(true);
                             setVxStartImageId(null);
                             setVxStartFromVideoId(null);
-                            setVxStartFramePath(null);
                             setVxEndImageId(null);
                             setIsGenOpen(true);
                           }}
@@ -2259,7 +2493,10 @@ export default function App() {
                   <button
                     className="button text-[10px] w-full bg-violet-500/20 hover:bg-violet-500/30 text-violet-300"
                     onClick={() => {
-                      // Just open modal, don't auto-configure
+                      // If frames are planned, use them
+                      if (vxStartImageId || vxStartFramePath || vxEndImageId) {
+                        setVxImageMode('start_end');
+                      }
                       setIsGenOpen(true);
                     }}
                   >
@@ -2349,8 +2586,13 @@ export default function App() {
                     className="button w-full text-xs"
                     onClick={() => {
                       // Pre-select this video for lip-sync
-                      const videoId = media.find(m => m.file_path === shot.file_path)?.media_id;
-                      console.log('Inspector lip-sync button clicked for shot:', shot.shot_id, 'file_path:', shot.file_path, 'found videoId:', videoId);
+                      // Match by path (exact or normalized)
+                      const videoId = media.find(m => {
+                        const mPath = m.path?.replace('project_data/', '');
+                        const shPath = shot.file_path?.replace('project_data/', '');
+                        return mPath === shPath || m.path === shot.file_path;
+                      })?.id;
+                      console.log('Inspector lip-sync button clicked for shot:', shot.shot_id, 'file_path:', shot.file_path, 'found videoId:', videoId, 'media:', media.map(m => ({ id: m.id, path: m.path })));
                       if (videoId) {
                         setLipMode('video');
                         setLipVideoId(videoId);
@@ -2384,6 +2626,87 @@ export default function App() {
         })()}
         </div>
       </div>
+      
+      {/* Prompt Templates Modal */}
+      <Dialog.Root open={isTemplatesOpen} onOpenChange={setIsTemplatesOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] max-h-[80vh] card p-5 overflow-y-auto">
+            <Dialog.Title className="text-sm font-semibold mb-2">Prompt Templates</Dialog.Title>
+            <Dialog.Description className="text-xs text-neutral-400 mb-4">
+              Click a template to use it, or create your own.
+            </Dialog.Description>
+            
+            <div className="space-y-2 mb-4">
+              {promptTemplates.map((template, idx) => (
+                <div key={idx} className="flex items-start gap-2 p-3 bg-neutral-900/50 rounded border border-neutral-800 hover:border-violet-500/50 transition-colors">
+                  <div className="flex-1">
+                    <div className="text-xs font-medium text-neutral-200 mb-1">{template.name}</div>
+                    <div className="text-[11px] text-neutral-400">{template.prompt}</div>
+                  </div>
+                  <div className="flex gap-1">
+                    <button
+                      className="button text-[10px] px-2 py-1"
+                      onClick={() => {
+                        setGenPrompt(template.prompt);
+                        setIsTemplatesOpen(false);
+                      }}
+                    >
+                      Use
+                    </button>
+                    <button
+                      className="button text-[10px] px-2 py-1 text-red-400"
+                      onClick={() => {
+                        const newTemplates = promptTemplates.filter((_, i) => i !== idx);
+                        setPromptTemplates(newTemplates);
+                        localStorage.setItem('promptTemplates', JSON.stringify(newTemplates));
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            
+            <div className="border-t border-neutral-800 pt-4">
+              <div className="text-xs font-medium text-neutral-300 mb-2">Add New Template</div>
+              <input
+                className="field mb-2"
+                placeholder="Template name"
+                id="newTemplateName"
+              />
+              <textarea
+                className="field h-20 mb-2"
+                placeholder="Template prompt"
+                id="newTemplatePrompt"
+              />
+              <button
+                className="button-primary w-full"
+                onClick={() => {
+                  const nameInput = document.getElementById('newTemplateName') as HTMLInputElement;
+                  const promptInput = document.getElementById('newTemplatePrompt') as HTMLTextAreaElement;
+                  if (nameInput.value && promptInput.value) {
+                    const newTemplates = [...promptTemplates, { name: nameInput.value, prompt: promptInput.value }];
+                    setPromptTemplates(newTemplates);
+                    localStorage.setItem('promptTemplates', JSON.stringify(newTemplates));
+                    nameInput.value = '';
+                    promptInput.value = '';
+                  }
+                }}
+              >
+                Add Template
+              </button>
+            </div>
+            
+            <div className="mt-4 flex justify-end">
+              <Dialog.Close asChild>
+                <button className="button">Close</button>
+              </Dialog.Close>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }

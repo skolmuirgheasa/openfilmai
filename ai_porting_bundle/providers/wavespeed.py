@@ -52,16 +52,42 @@ class WaveSpeedProvider(AIProvider):
             url = direct_url or self.RESULT_URL.format(request_id=request_id)
             resp = self._make_request("GET", url, headers=headers, timeout=60)
             data = resp.json()
-            status = (data.get("status") or data.get("state") or "").lower()
+            
+            # WaveSpeed returns nested structure: {"data": {"status": "...", "outputs": [...]}}
+            data_block = data.get("data") or data
+            status = (data_block.get("status") or data_block.get("state") or data.get("status") or "").lower()
             log.info(f"WaveSpeed status {status} for request {request_id}")
+            
             if status in {"completed", "success", "succeeded", "finished"}:
-                result = data.get("result") or data
-                video_url = result.get("videoUrl") or result.get("video_url") or result.get("video") or result.get("url")
+                # Try multiple paths to find video URL
+                result = data_block.get("result") or data_block
+                outputs = data_block.get("outputs") or []
+                
+                # Check outputs array first
+                if outputs and len(outputs) > 0:
+                    video_url = outputs[0] if isinstance(outputs[0], str) else None
+                else:
+                    # Fallback to various possible keys
+                    video_url = (
+                        result.get("videoUrl") or 
+                        result.get("video_url") or 
+                        result.get("video") or 
+                        result.get("url") or
+                        data.get("videoUrl") or
+                        data.get("video_url")
+                    )
+                
                 if not video_url:
-                    raise AIProviderError(f"WaveSpeed: completed but no video url in response: {data}")
+                    log.error(f"WaveSpeed: completed but no video url. Full response: {data}")
+                    raise AIProviderError(f"WaveSpeed: completed but no video url in response")
+                
+                log.info(f"WaveSpeed video URL found: {video_url}")
                 return video_url
+            
             if status in {"failed", "error"}:
-                raise AIProviderError(f"WaveSpeed request failed: {data}")
+                error_msg = data_block.get("error") or data.get("error") or "Unknown error"
+                raise AIProviderError(f"WaveSpeed request failed: {error_msg}")
+        
         raise AIProviderError("WaveSpeed request timed out")
 
     def generate(self, prompt, image_path=None, audio_path=None, video_path=None, resolution="720p", seed=-1, output_path=None, **kwargs) -> str:

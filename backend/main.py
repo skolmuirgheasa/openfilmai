@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 import json
 import shutil
+import subprocess
 from urllib.parse import urlparse
 import threading
 import time
@@ -40,9 +41,40 @@ app = FastAPI(title="OpenFilmAI Backend", version="0.1.0")
 PROJECT_DATA_DIR = Path("project_data")
 PROJECT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+@app.on_event("startup")
+async def startup_event():
+    """Load persisted jobs on startup"""
+    _load_jobs()
+    # Mark any "running" jobs as "failed" since backend reload killed them
+    with jobs_lock:
+        for job_id, job in background_jobs.items():
+            if job.get("status") == "running":
+                job["status"] = "failed"
+                job["error"] = "Backend reloaded during job execution"
+                job["message"] = "Job was interrupted by backend reload. Please retry."
+        _save_jobs()
+
 # In-memory job queue for long-running tasks
+# Persisted to disk to survive backend reloads
+JOBS_FILE = Path.cwd() / "project_data" / "_jobs.json"
 background_jobs: Dict[str, Dict] = {}
 jobs_lock = threading.Lock()
+
+def _load_jobs():
+    """Load jobs from disk on startup"""
+    global background_jobs
+    if JOBS_FILE.exists():
+        try:
+            with open(JOBS_FILE, "r") as f:
+                background_jobs = json.load(f)
+        except Exception:
+            background_jobs = {}
+
+def _save_jobs():
+    """Save jobs to disk"""
+    JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(JOBS_FILE, "w") as f:
+        json.dump(background_jobs, f, indent=2)
 
 # Serve project_data files (videos, frames) under /files/*
 app.mount("/files", StaticFiles(directory=str(PROJECT_DATA_DIR)), name="files")
@@ -79,6 +111,7 @@ def create_job(job_type: str, **kwargs) -> str:
             "created_at": time.time(),
             **kwargs
         }
+        _save_jobs()
     return job_id
 
 
@@ -87,6 +120,7 @@ def update_job(job_id: str, **kwargs):
     with jobs_lock:
         if job_id in background_jobs:
             background_jobs[job_id].update(kwargs)
+            _save_jobs()
 
 
 def get_job(job_id: str) -> Optional[Dict]:
@@ -356,12 +390,31 @@ def _wavespeed_provider():
 
 
 def _save_video_to_media(project_id: str, tmp_path: str, desired_name: Optional[str] = None) -> Dict[str, str]:
+    import shutil
+    from backend.video.ffmpeg import extract_first_last_frames
+    
     proj_video = PROJECT_DATA_DIR / project_id / "media" / "video"
     proj_video.mkdir(parents=True, exist_ok=True)
     stub = f"wavespeed_{int(__import__('time').time())}"
     target = proj_video / _safe_filename(desired_name, stub, ".mp4")
-    Path(tmp_path).rename(target)
+    # Use shutil.move instead of rename to handle cross-filesystem moves
+    shutil.move(str(tmp_path), str(target))
     rel = str(target.relative_to(PROJECT_DATA_DIR))
+    
+    # Extract first frame as thumbnail
+    proj_images = PROJECT_DATA_DIR / project_id / "media" / "images"
+    proj_images.mkdir(parents=True, exist_ok=True)
+    thumb_first = proj_images / f"{target.stem}_first.png"
+    thumb_last = proj_images / f"{target.stem}_last.png"
+    try:
+        extract_first_last_frames(str(target), str(thumb_first), str(thumb_last))
+        rel_first = str(thumb_first.relative_to(PROJECT_DATA_DIR))
+        rel_last = str(thumb_last.relative_to(PROJECT_DATA_DIR))
+        add_media(project_id, {"id": thumb_first.name, "type": "image", "path": f"project_data/{rel_first}", "url": f"/files/{rel_first}"})
+        add_media(project_id, {"id": thumb_last.name, "type": "image", "path": f"project_data/{rel_last}", "url": f"/files/{rel_last}"})
+    except Exception as e:
+        logger.warning(f"Failed to extract thumbnail for {target.name}: {e}")
+    
     item = {"id": target.name, "type": "video", "path": f"project_data/{rel}", "url": f"/files/{rel}"}
     add_media(project_id, item)
     return item
@@ -392,7 +445,12 @@ def _run_lipsync_image_job(job_id: str, req: LipSyncImageRequest):
 
 def _run_lipsync_video_job(job_id: str, req: LipSyncVideoRequest):
     """Background worker for video lip-sync"""
+    import logging
+    import tempfile
+    logger = logging.getLogger("openfilmai")
+    
     try:
+        logger.info(f"[Job {job_id}] Starting lip-sync video job")
         update_job(job_id, status="running", progress=10, message="Initializing WaveSpeed...")
         prov = _wavespeed_provider()
         vid = Path(req.video_path)
@@ -402,14 +460,64 @@ def _run_lipsync_video_job(job_id: str, req: LipSyncVideoRequest):
         if not aud.is_absolute():
             aud = Path.cwd() / req.audio_wav_path
         
-        update_job(job_id, progress=20, message="Uploading to WaveSpeed (may take 5-30 min)...")
-        tmp = prov.generate(prompt=req.prompt or "", video_path=str(vid), audio_path=str(aud))
+        logger.info(f"[Job {job_id}] Video: {vid}, Audio: {aud}")
         
-        update_job(job_id, progress=90, message="Saving result...")
+        # Get video duration
+        update_job(job_id, progress=15, message="Preparing audio...")
+        probe_vid = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(vid)
+        ], capture_output=True, text=True)
+        
+        if probe_vid.returncode != 0:
+            raise RuntimeError(f"Failed to probe video duration: {probe_vid.stderr}")
+        
+        video_duration = float(probe_vid.stdout.strip())
+        logger.info(f"[Job {job_id}] Video duration: {video_duration}s")
+        
+        # Pad audio to match video duration (WaveSpeed generates video matching audio length)
+        from backend.video.ffmpeg import pad_audio_to_duration
+        padded_audio = tempfile.mktemp(suffix=".aac", dir="/tmp")
+        try:
+            pad_audio_to_duration(str(aud), video_duration, padded_audio)
+            logger.info(f"[Job {job_id}] Audio padded to {video_duration}s")
+            audio_to_use = padded_audio
+        except Exception as e:
+            logger.warning(f"[Job {job_id}] Failed to pad audio: {e}, using original")
+            audio_to_use = str(aud)
+        
+        update_job(job_id, progress=20, message="Uploading to WaveSpeed (may take 5-30 min)...")
+        tmp_lipsync = prov.generate(prompt=req.prompt or "", video_path=str(vid), audio_path=audio_to_use)
+        logger.info(f"[Job {job_id}] WaveSpeed returned: {tmp_lipsync}")
+        
+        # Clean up padded audio
+        if audio_to_use == padded_audio:
+            Path(padded_audio).unlink(missing_ok=True)
+        
+        # Ensure browser-compatible format
+        update_job(job_id, progress=85, message="Converting to browser-compatible format...")
+        from backend.video.ffmpeg import ensure_compatible_format
+        compatible_tmp = tempfile.mktemp(suffix=".mp4", dir="/tmp")
+        try:
+            logger.info(f"[Job {job_id}] Converting {tmp_lipsync} to compatible format")
+            ensure_compatible_format(tmp_lipsync, compatible_tmp)
+            Path(tmp_lipsync).unlink(missing_ok=True)
+            tmp = compatible_tmp
+            logger.info(f"[Job {job_id}] Format conversion successful")
+        except Exception as e:
+            logger.warning(f"[Job {job_id}] Format conversion failed: {e}, using original")
+            tmp = tmp_lipsync
+            # Continue with original if conversion fails
+        
+        update_job(job_id, progress=95, message="Saving result...")
+        logger.info(f"[Job {job_id}] Saving {tmp} to media library")
         item = _save_video_to_media(req.project_id, tmp, req.filename)
+        logger.info(f"[Job {job_id}] Saved as: {item}")
         
         update_job(job_id, status="completed", progress=100, result=item, message="Lip-sync complete!")
+        logger.info(f"[Job {job_id}] Job completed successfully")
     except Exception as e:
+        logger.error(f"[Job {job_id}] Job failed: {e}", exc_info=True)
         update_job(job_id, status="failed", error=str(e), message=f"Error: {str(e)}")
 
 
@@ -545,6 +653,8 @@ class ShotCreate(BaseModel):
 
 @app.post("/storage/{project_id}/scenes/{scene_id}/shots")
 def api_add_shot(project_id: str, scene_id: str, body: ShotCreate):
+    from backend.video.ffmpeg import extract_first_last_frames
+    
     # Ensure scene exists; if not, create it for robustness
     scene = get_scene(project_id, scene_id)
     if scene is None:
@@ -553,7 +663,37 @@ def api_add_shot(project_id: str, scene_id: str, body: ShotCreate):
             add_scene(project_id, scene_id, scene_id.replace("_", " ").title())
         except Exception:
             pass
-    shot = add_shot(project_id, scene_id, body.model_dump(exclude_none=True))
+    
+    shot_data = body.model_dump(exclude_none=True)
+    
+    # If this is a video shot without frames, extract them
+    if shot_data.get('file_path') and not shot_data.get('first_frame_path'):
+        try:
+            file_path = shot_data['file_path']
+            # Resolve to absolute path
+            if file_path.startswith('project_data/'):
+                abs_path = PROJECT_DATA_DIR / file_path.replace('project_data/', '')
+            else:
+                abs_path = Path(file_path)
+            
+            if abs_path.exists() and abs_path.suffix.lower() in ['.mp4', '.mov', '.avi', '.mkv']:
+                # Extract frames to scene frames directory
+                dirs = ensure_scene_dirs(project_id, scene_id)
+                shot_id = shot_data.get('shot_id', f"shot_{int(__import__('time').time())}")
+                first_frame = dirs["frames"] / f"{shot_id}_first.png"
+                last_frame = dirs["frames"] / f"{shot_id}_last.png"
+                
+                extract_first_last_frames(str(abs_path), str(first_frame), str(last_frame))
+                
+                # Add frame paths to shot data
+                rel_first = str(first_frame.relative_to(PROJECT_DATA_DIR))
+                rel_last = str(last_frame.relative_to(PROJECT_DATA_DIR))
+                shot_data['first_frame_path'] = f"project_data/{rel_first}"
+                shot_data['last_frame_path'] = f"project_data/{rel_last}"
+        except Exception as e:
+            logger.warning(f"Failed to extract frames for imported shot: {e}")
+    
+    shot = add_shot(project_id, scene_id, shot_data)
     return {"status": "ok", "shot": shot}
 
 
@@ -739,6 +879,49 @@ def api_extract_first_frame(body: FrameExtractBody):
         return {"status": "ok", "image_path": f"project_data/{rel}", "url": f"/files/{rel}"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+
+@app.post("/storage/{project_id}/media/fix-formats")
+def api_fix_media_formats(project_id: str):
+    """
+    Re-encode any videos that aren't in browser-compatible format.
+    This fixes playback issues with videos that have incompatible codecs.
+    """
+    from backend.video.ffmpeg import ensure_compatible_format
+    import tempfile
+    
+    proj_dir = PROJECT_DATA_DIR / project_id
+    video_dir = proj_dir / "media" / "video"
+    
+    if not video_dir.exists():
+        return {"status": "ok", "fixed": 0}
+    
+    fixed_count = 0
+    for video_file in video_dir.glob("*.mp4"):
+        # Check if video is compatible
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,pix_fmt",
+            "-of", "csv=p=0", str(video_file)
+        ], capture_output=True, text=True)
+        
+        if probe.returncode == 0:
+            codec_info = probe.stdout.strip()
+            # Check if it's h264 with yuv420p
+            if "h264" not in codec_info or "yuv420p" not in codec_info:
+                try:
+                    # Re-encode to compatible format
+                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                        tmp_path = tmp.name
+                    
+                    ensure_compatible_format(str(video_file), tmp_path)
+                    # Replace original with fixed version
+                    Path(tmp_path).replace(video_file)
+                    fixed_count += 1
+                except Exception as e:
+                    print(f"Failed to fix {video_file.name}: {e}")
+    
+    return {"status": "ok", "fixed": fixed_count}
+
 
 @app.post("/storage/{project_id}/media/scan")
 def api_scan_media(project_id: str):
