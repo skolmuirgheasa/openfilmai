@@ -77,18 +77,90 @@ def ensure_scene_dirs(project_id: str, scene_id: str) -> Dict[str, Path]:
 
 
 # Media helpers
-def list_media(project_id: str) -> List[Dict[str, Any]]:
+def list_media(project_id: str, include_archived: bool = False) -> List[Dict[str, Any]]:
     meta = read_metadata(project_id)
-    return meta.get("media", [])
+    all_media = meta.get("media", [])
+    if include_archived:
+        return all_media
+    # Filter out archived items by default
+    return [m for m in all_media if not m.get("archived", False)]
 
 
 def add_media(project_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    import time as time_module
     meta = read_metadata(project_id)
     media = meta.get("media", [])
+    # Auto-tag source if not specified
+    if "source" not in item:
+        if "_first.png" in item.get("id", "") or "_last.png" in item.get("id", ""):
+            item["source"] = "extracted"
+        else:
+            item["source"] = "generated"
+    # Add timestamp for reliable sorting
+    if "timestamp" not in item:
+        item["timestamp"] = int(time_module.time())
     media.append(item)
     meta["media"] = media
     write_metadata(project_id, meta)
     return item
+
+
+def archive_media(project_id: str, media_id: str, archived: bool = True) -> Dict[str, Any]:
+    """Archive or unarchive a media item by ID. Returns dict with success status and optional error."""
+    meta = read_metadata(project_id)
+    
+    # Check if this media is used as a character reference image
+    if archived:  # Only check when archiving, not unarchiving
+        characters = meta.get("characters", [])
+        for char in characters:
+            ref_images = char.get("reference_image_ids", [])
+            if media_id in ref_images:
+                return {
+                    "success": False,
+                    "error": f"Cannot archive: this image is used as a reference for character '{char.get('name', 'Unknown')}'. Remove it from the character first."
+                }
+    
+    media = meta.get("media", [])
+    for item in media:
+        if item.get("id") == media_id:
+            item["archived"] = archived
+            write_metadata(project_id, meta)
+            return {"success": True}
+    return {"success": False, "error": "Media item not found"}
+
+
+def bulk_archive_media(project_id: str, media_ids: List[str], archived: bool = True) -> Dict[str, Any]:
+    """Archive or unarchive multiple media items. Returns dict with count and skipped items."""
+    meta = read_metadata(project_id)
+    
+    # Build set of media IDs that are character references
+    protected_ids = set()
+    if archived:  # Only check when archiving
+        characters = meta.get("characters", [])
+        for char in characters:
+            ref_images = char.get("reference_image_ids", [])
+            protected_ids.update(ref_images)
+    
+    media = meta.get("media", [])
+    count = 0
+    skipped = []
+    
+    for item in media:
+        item_id = item.get("id")
+        if item_id in media_ids:
+            if item_id in protected_ids:
+                # Find which character(s) use this
+                char_names = [c.get("name", "Unknown") for c in meta.get("characters", []) 
+                             if item_id in c.get("reference_image_ids", [])]
+                skipped.append({"id": item_id, "characters": char_names})
+            else:
+                item["archived"] = archived
+                count += 1
+    
+    if count > 0:
+        write_metadata(project_id, meta)
+    
+    return {"count": count, "skipped": skipped}
 
 
 def media_dirs(project_id: str) -> Dict[str, Path]:

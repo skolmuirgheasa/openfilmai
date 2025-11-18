@@ -78,22 +78,37 @@ class VertexClient:
         url = f"{base}/projects/{self.project_id}/locations/{self.location}/{self._model_path()}:predictLongRunning"
 
         instance: Dict[str, Any] = {"prompt": prompt}
+        
+        # Veo 3.1 fast only supports start and/or end frames, not general reference images
+        # reference_images parameter is accepted for API compatibility but ignored
         if first_frame_image:
             instance["image"] = {"gcsUri": self._upload_image_to_gcs(first_frame_image), "mimeType": "image/jpeg"}
         if last_frame_image:
             instance["lastFrame"] = {"gcsUri": self._upload_image_to_gcs(last_frame_image), "mimeType": "image/jpeg"}
-        if reference_images:
-            instance["referenceImages"] = [
-                {"gcsUri": self._upload_image_to_gcs(p), "mimeType": "image/jpeg"} for p in reference_images
-            ]
 
         params: Dict[str, Any] = {"sampleCount": 1}
+        
+        # Add aspect ratio (Vertex AI Veo supports: "16:9", "9:16")
+        if aspect_ratio:
+            instance["aspectRatio"] = aspect_ratio
+        
         # Try to explicitly disable audio where supported; unknown keys are ignored by API
         params["addAudio"] = bool(generate_audio)
         params["enableAudio"] = bool(generate_audio)
         body = {"instances": [instance], "parameters": params}
+        
+        # Log the request for debugging
+        import json as json_mod
+        print(f"[VERTEX] Sending request to: {url}")
+        print(f"[VERTEX] Request body: {json_mod.dumps(body, indent=2)}")
+        
         r = requests.post(url, headers=self._headers(), json=body, timeout=self.timeout)
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            print(f"[VERTEX] HTTP Error: {r.status_code}")
+            print(f"[VERTEX] Response: {r.text}")
+            raise
         op_name = r.json().get("name")
         if not op_name:
             raise RuntimeError(f"Vertex: no operation name: {r.text}")

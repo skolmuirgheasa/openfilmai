@@ -29,6 +29,7 @@ export default function App() {
   const [replicateModel, setReplicateModel] = useState<string>('google/veo-3.1');
   const [seedreamAspectRatio, setSeedreamAspectRatio] = useState<string>('16:9');
   const [seedreamNumOutputs, setSeedreamNumOutputs] = useState<number>(1);
+  const [videoAspectRatio, setVideoAspectRatio] = useState<string>('16:9');
   const [replicateRefImages, setReplicateRefImages] = useState<string[]>([]);
   const [isVoiceOpen, setIsVoiceOpen] = useState<boolean>(false);
   const [voiceText, setVoiceText] = useState<string>('');
@@ -54,6 +55,11 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [settings, setSettings] = useState<any>({});
+  const [customModels, setCustomModels] = useState<any[]>([]);
+  const [isAddCustomModelOpen, setIsAddCustomModelOpen] = useState<boolean>(false);
+  const [customModelInput, setCustomModelInput] = useState<string>('');
+  const [customModelFetching, setCustomModelFetching] = useState<boolean>(false);
+  const [customModelPreview, setCustomModelPreview] = useState<any>(null);
   const [isContPrevFrame, setIsContPrevFrame] = useState<boolean>(false);
   const [playIdx, setPlayIdx] = useState<number>(-1);
   const [provider, setProvider] = useState<'replicate' | 'vertex'>('replicate');
@@ -64,6 +70,7 @@ export default function App() {
   const [previewHeight, setPreviewHeight] = useState<number>(400);
   const [draggedShotId, setDraggedShotId] = useState<string | null>(null);
   const [mediaFilter, setMediaFilter] = useState<'all' | 'image' | 'video' | 'audio'>('all');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'generated' | 'uploaded' | 'extracted'>('all');
   // Prompt history for each generation type
   const [shotPromptHistory, setShotPromptHistory] = useState<string[]>([]);
   const [shotPromptHistoryIndex, setShotPromptHistoryIndex] = useState<number>(-1);
@@ -120,6 +127,9 @@ export default function App() {
   const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
   const [showInspector, setShowInspector] = useState<boolean>(false);
   const [continuitySettings, setContinuitySettings] = useState<Record<string, { useLastFrame: boolean; applyOpticalFlow: boolean }>>({});
+  const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(new Set());
+  const [showArchived, setShowArchived] = useState<boolean>(false);
+  const [archivedMedia, setArchivedMedia] = useState<any[]>([]);
   
   function ProjectPicker({ projectId, onSwitch }: { projectId: string; onSwitch: (pid: string) => void }) {
     const [projects, setProjects] = useState<string[]>([]);
@@ -216,6 +226,11 @@ export default function App() {
         const s = await fetch('http://127.0.0.1:8000/settings').then((r) => r.json());
         if (!cancelled) setSettings(s.settings ?? {});
       } catch (_) {}
+      // Load custom Replicate models
+      try {
+        const cm = await fetch('http://127.0.0.1:8000/settings/custom-models').then((r) => r.json());
+        if (!cancelled) setCustomModels(cm.models ?? []);
+      } catch (_) {}
       // Auto-scan media on boot
       try {
         await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/scan`, { method: 'POST' });
@@ -285,25 +300,28 @@ export default function App() {
     const m = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`).then((r) => r.json());
     // Sort by most recent first (newest at top)
     const sorted = (m.media ?? []).sort((a: any, b: any) => {
-      // Extract timestamp from filename - try multiple patterns
+      // Use timestamp field if available (more reliable)
+      if (a.timestamp && b.timestamp) {
+        return b.timestamp - a.timestamp;
+      }
+      // Fallback: Extract timestamp from filename
       const getTimestamp = (item: any) => {
+        if (item.timestamp) return item.timestamp;
         // Pattern 1: "1763084012_video.mp4" or "1763084012.mp4"
         const match1 = item.id?.match(/^(\d{10,13})[_\.]/);
         if (match1) return parseInt(match1[1]);
-        
         // Pattern 2: "wavespeed_1763084012.mp4" or "scene_002_shot_1763084012.mp4"
         const match2 = item.id?.match(/_(\d{10,13})[_\.]/);
         if (match2) return parseInt(match2[1]);
-        
         // Pattern 3: Any 10-13 digit number in the filename
         const match3 = item.id?.match(/(\d{10,13})/);
         if (match3) return parseInt(match3[1]);
-        
         // Fallback: use 0 (will sort to end)
         return 0;
       };
       return getTimestamp(b) - getTimestamp(a);
     });
+    console.log('Media sorted:', sorted.length, 'items. Newest:', sorted[0]?.id, sorted[0]?.timestamp);
     setMedia(sorted);
   }
 
@@ -571,6 +589,31 @@ export default function App() {
   }, [projectId]);
 
   useEffect(() => {
+    if (showArchived && projectId) {
+      fetch(`http://127.0.0.1:8000/storage/${projectId}/media/archived`)
+        .then((r) => r.json())
+        .then((d) => {
+          const sorted = (d.media ?? []).sort((a: any, b: any) => {
+            const getTimestamp = (item: any) => {
+              const match1 = item.id?.match(/^(\d{10,13})[_\.]/);
+              if (match1) return parseInt(match1[1]);
+              const match2 = item.id?.match(/_(\d{10,13})[_\.]/);
+              if (match2) return parseInt(match2[1]);
+              const match3 = item.id?.match(/(\d{10,13})/);
+              if (match3) return parseInt(match3[1]);
+              return 0;
+            };
+            return getTimestamp(b) - getTimestamp(a);
+          });
+          setArchivedMedia(sorted);
+        })
+        .catch(() => setArchivedMedia([]));
+    } else {
+      setArchivedMedia([]);
+    }
+  }, [showArchived, projectId]);
+
+  useEffect(() => {
     const char = selectedCharacterId ? characters.find((c) => c.character_id === selectedCharacterId) : null;
     
     // Prefill reference images when a character with references is active
@@ -718,6 +761,55 @@ export default function App() {
                     <input className="field" value={settings.vertex_location ?? ''} onChange={(e) => setSettings((s: any) => ({ ...s, vertex_location: e.target.value }))} />
                   </div>
                 </div>
+                
+                {/* Custom Replicate Models Section */}
+                <div className="mt-6 pt-4 border-t border-neutral-700">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">Custom Replicate Models</h3>
+                      <p className="text-xs text-neutral-400 mt-1">Add your own Replicate models</p>
+                    </div>
+                    <button
+                      className="button-primary text-xs px-2 py-1"
+                      onClick={() => setIsAddCustomModelOpen(true)}
+                    >
+                      + Add Model
+                    </button>
+                  </div>
+                  
+                  {customModels.length === 0 ? (
+                    <div className="text-xs text-neutral-500 italic">No custom models added yet.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {customModels.map((model) => (
+                        <div key={model.model_id} className="flex items-center justify-between p-2 bg-neutral-900/50 rounded border border-neutral-800">
+                          <div className="flex-1">
+                            <div className="text-xs font-medium">{model.friendly_name}</div>
+                            <div className="text-[10px] text-neutral-500">{model.model_id}</div>
+                            <span className="inline-block mt-1 px-2 py-0.5 text-[9px] rounded-full bg-violet-500/20 text-violet-300">
+                              {model.model_type}
+                            </span>
+                          </div>
+                          <button
+                            className="button text-xs px-2 py-1 text-red-400 hover:text-red-300"
+                            onClick={async () => {
+                              if (confirm(`Delete custom model "${model.friendly_name}"?`)) {
+                                await fetch(`http://127.0.0.1:8000/settings/custom-models/${encodeURIComponent(model.model_id)}`, {
+                                  method: 'DELETE'
+                                });
+                                const cm = await fetch('http://127.0.0.1:8000/settings/custom-models').then((r) => r.json());
+                                setCustomModels(cm.models ?? []);
+                              }
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                
                 <div className="mt-4 flex justify-end gap-2">
                   <Dialog.Close asChild>
                     <button className="button">Close</button>
@@ -734,6 +826,190 @@ export default function App() {
                     }}
                   >
                     Save
+                  </button>
+                </div>
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
+          
+          {/* Add Custom Model Dialog */}
+          <Dialog.Root open={isAddCustomModelOpen} onOpenChange={(open) => {
+            setIsAddCustomModelOpen(open);
+            if (!open) {
+              // Reset state when closing
+              setCustomModelInput('');
+              setCustomModelPreview(null);
+              setCustomModelFetching(false);
+            }
+          }}>
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+              <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] max-h-[80vh] overflow-y-auto card p-5">
+                <Dialog.Title className="text-sm font-semibold mb-2">Add Custom Replicate Model</Dialog.Title>
+                <Dialog.Description className="text-xs text-neutral-400 mb-4">
+                  Paste a Replicate model URL or ID to add it to your library.
+                </Dialog.Description>
+                
+                <div className="space-y-4">
+                  {/* Step 1: Input model ID */}
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">
+                      Replicate Model URL or ID
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        className="field flex-1"
+                        placeholder="e.g. owner/model-name or https://replicate.com/owner/model-name"
+                        value={customModelInput}
+                        onChange={(e) => setCustomModelInput(e.target.value)}
+                        disabled={customModelFetching || customModelPreview !== null}
+                      />
+                      {!customModelPreview && (
+                        <button
+                          className="button-primary"
+                          disabled={!customModelInput.trim() || customModelFetching}
+                          onClick={async () => {
+                            setCustomModelFetching(true);
+                            try {
+                              const response = await fetch('http://127.0.0.1:8000/replicate/fetch-schema', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ model_id: customModelInput })
+                              });
+                              const data = await response.json();
+                              
+                              if (data.status === 'ok') {
+                                setCustomModelPreview({
+                                  ...data,
+                                  friendly_name: data.model_id.split('/')[1] || data.model_id
+                                });
+                              } else {
+                                alert(`Error: ${data.detail || 'Failed to fetch schema'}`);
+                              }
+                            } catch (err) {
+                              alert(`Error: ${err}`);
+                            } finally {
+                              setCustomModelFetching(false);
+                            }
+                          }}
+                        >
+                          {customModelFetching ? 'Fetching...' : 'Fetch Schema'}
+                        </button>
+                      )}
+                      {customModelPreview && (
+                        <button
+                          className="button"
+                          onClick={() => {
+                            setCustomModelPreview(null);
+                            setCustomModelInput('');
+                          }}
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* Step 2: Preview and configure */}
+                  {customModelPreview && (
+                    <div className="space-y-3 p-3 bg-neutral-900/50 rounded border border-neutral-800">
+                      <div>
+                        <div className="text-xs font-semibold text-green-400 mb-2">✓ Schema Fetched Successfully</div>
+                        <div className="text-[10px] text-neutral-400">
+                          Model ID: <span className="text-neutral-200">{customModelPreview.model_id}</span>
+                        </div>
+                        <div className="text-[10px] text-neutral-400 mt-1">
+                          Detected Type: <span className="inline-block px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300">
+                            {customModelPreview.model_type}
+                          </span>
+                        </div>
+                        {customModelPreview.model_type === 'unknown' && (
+                          <div className="text-[10px] text-yellow-400 mt-2">
+                            ⚠️ Could not auto-detect model type. Only image and video models are supported.
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div>
+                        <label className="block text-xs text-neutral-400 mb-1">Friendly Name</label>
+                        <input
+                          className="field"
+                          value={customModelPreview.friendly_name}
+                          onChange={(e) => setCustomModelPreview({ ...customModelPreview, friendly_name: e.target.value })}
+                          placeholder="e.g. My Video Model"
+                        />
+                      </div>
+                      
+                      <div>
+                        <div className="text-xs text-neutral-400 mb-1">Parameters ({customModelPreview.parameters.length})</div>
+                        <div className="max-h-40 overflow-y-auto space-y-1">
+                          {customModelPreview.parameters.slice(0, 10).map((param: any) => (
+                            <div key={param.name} className="text-[10px] flex items-center gap-2 p-1 bg-neutral-900/70 rounded">
+                              <span className="font-mono text-violet-300">{param.name}</span>
+                              <span className="text-neutral-500">({param.type})</span>
+                              {param.required && <span className="text-red-400">*</span>}
+                            </div>
+                          ))}
+                          {customModelPreview.parameters.length > 10 && (
+                            <div className="text-[10px] text-neutral-500 italic">
+                              ... and {customModelPreview.parameters.length - 10} more
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    className="button"
+                    onClick={() => {
+                      setIsAddCustomModelOpen(false);
+                      setCustomModelInput('');
+                      setCustomModelPreview(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="button-primary"
+                    disabled={!customModelPreview || customModelPreview.model_type === 'unknown'}
+                    onClick={async () => {
+                      try {
+                        const response = await fetch('http://127.0.0.1:8000/settings/custom-models', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            model_id: customModelPreview.model_id,
+                            friendly_name: customModelPreview.friendly_name,
+                            model_type: customModelPreview.model_type,
+                            schema: customModelPreview.schema,
+                            parameters: customModelPreview.parameters
+                          })
+                        });
+                        const data = await response.json();
+                        
+                        if (data.status === 'ok') {
+                          // Reload custom models list
+                          const cm = await fetch('http://127.0.0.1:8000/settings/custom-models').then((r) => r.json());
+                          setCustomModels(cm.models ?? []);
+                          
+                          // Close dialog and reset
+                          setIsAddCustomModelOpen(false);
+                          setCustomModelInput('');
+                          setCustomModelPreview(null);
+                          
+                          alert(`✓ Model "${customModelPreview.friendly_name}" added successfully!`);
+                        } else {
+                          alert(`Error: ${data.detail || 'Failed to save model'}`);
+                        }
+                      } catch (err) {
+                        alert(`Error: ${err}`);
+                      }
+                    }}
+                  >
+                    Save Model
                   </button>
                 </div>
               </Dialog.Content>
@@ -834,31 +1110,132 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div className="flex gap-1 flex-wrap">
-            <button
-              className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'all' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
-              onClick={() => setMediaFilter('all')}
-            >
-              All ({media.length})
-            </button>
-            <button
-              className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'image' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
-              onClick={() => setMediaFilter('image')}
-            >
-              Images ({imageMedia.length})
-            </button>
-            <button
-              className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'video' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
-              onClick={() => setMediaFilter('video')}
-            >
-              Videos ({videoMedia.length})
-            </button>
-            <button
-              className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'audio' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
-              onClick={() => setMediaFilter('audio')}
-            >
-              Audio ({audioMedia.length})
-            </button>
+          {selectedMediaIds.size > 0 && (
+            <div className="flex items-center gap-2 mb-2 p-1.5 bg-neutral-800/40 border border-neutral-700 rounded text-xs">
+              <span className="text-neutral-400">{selectedMediaIds.size} selected</span>
+              <button
+                className="text-[10px] px-2 py-0.5 bg-neutral-700 hover:bg-neutral-600 rounded text-neutral-200"
+                onClick={() => {
+                  // Filter by type
+                  let filtered = mediaFilter === 'all' ? media : media.filter(m => m.type === mediaFilter);
+                  // Filter by source
+                  if (sourceFilter !== 'all') {
+                    filtered = filtered.filter(m => m.source === sourceFilter);
+                  }
+                  const allIds = new Set(filtered.map(m => m.id));
+                  setSelectedMediaIds(allIds);
+                }}
+              >
+                Select All
+              </button>
+              <button
+                className="text-[10px] px-2 py-0.5 bg-neutral-700 hover:bg-red-600 rounded text-neutral-200"
+                onClick={async () => {
+                  const ids = Array.from(selectedMediaIds);
+                  const response = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/bulk-archive`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ media_ids: ids, archived: true })
+                  });
+                  const data = await response.json();
+                  
+                  // Show message if items were skipped
+                  if (data.skipped && data.skipped.length > 0) {
+                    const skippedList = data.skipped.map((s: any) => 
+                      `• ${s.id} (used by: ${s.characters.join(', ')})`
+                    ).join('\n');
+                    alert(`${data.message}\n\nSkipped items:\n${skippedList}\n\nRemove these images from their characters first, or unarchive them from the Archive section below.`);
+                  }
+                  
+                  setSelectedMediaIds(new Set());
+                  await refreshMedia();
+                  // Refresh archived list
+                  const res = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/archived`);
+                  const archData = await res.json();
+                  const sorted = (archData.media ?? []).sort((a: any, b: any) => {
+                    const getTimestamp = (item: any) => {
+                      const match1 = item.id?.match(/^(\d{10,13})[_\.]/);
+                      if (match1) return parseInt(match1[1]);
+                      const match2 = item.id?.match(/_(\d{10,13})[_\.]/);
+                      if (match2) return parseInt(match2[1]);
+                      const match3 = item.id?.match(/(\d{10,13})/);
+                      if (match3) return parseInt(match3[1]);
+                      return 0;
+                    };
+                    return getTimestamp(b) - getTimestamp(a);
+                  });
+                  setArchivedMedia(sorted);
+                }}
+              >
+                Archive
+              </button>
+              <button
+                className="text-[10px] px-2 py-0.5 bg-neutral-700 hover:bg-neutral-600 rounded text-neutral-200"
+                onClick={() => setSelectedMediaIds(new Set())}
+              >
+                Clear
+              </button>
+            </div>
+          )}
+          <div className="space-y-2">
+            <div>
+              <div className="text-[10px] text-neutral-500 mb-1">Type</div>
+              <div className="flex gap-1 flex-wrap">
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'all' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setMediaFilter('all')}
+                >
+                  All
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'image' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setMediaFilter('image')}
+                >
+                  Images
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'video' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setMediaFilter('video')}
+                >
+                  Videos
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'audio' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setMediaFilter('audio')}
+                >
+                  Audio
+                </button>
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-neutral-500 mb-1">Source</div>
+              <div className="flex gap-1 flex-wrap">
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${sourceFilter === 'all' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setSourceFilter('all')}
+                >
+                  All
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${sourceFilter === 'generated' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setSourceFilter('generated')}
+                >
+                  API Generated
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${sourceFilter === 'uploaded' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setSourceFilter('uploaded')}
+                >
+                  Uploaded
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${sourceFilter === 'extracted' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setSourceFilter('extracted')}
+                >
+                  Auto-Extracted Frames
+                </button>
+              </div>
+            </div>
           </div>
         </div>
         <div className="flex items-center justify-between mb-2 hidden">
@@ -913,24 +1290,188 @@ export default function App() {
           }}
         >
           {(() => {
-            const filtered = mediaFilter === 'all' ? media : media.filter(m => m.type === mediaFilter);
+            // Filter by type first
+            let filtered = mediaFilter === 'all' ? media : media.filter(m => m.type === mediaFilter);
+            // Then filter by source
+            if (sourceFilter !== 'all') {
+              filtered = filtered.filter(m => m.source === sourceFilter);
+            }
+            // Note: showExtractedFrames toggle is now replaced by source filter
+            
             return filtered.length === 0 ? (
-              <div className="text-xs text-neutral-500">No {mediaFilter === 'all' ? '' : mediaFilter} files yet.</div>
+              <div className="text-xs text-neutral-500 p-2">No matching files.</div>
             ) : (
               filtered.map((m) => (
-                <button
+                <div
                   key={m.id}
-                  className={`w-full text-left text-[11px] text-neutral-300 inline-flex items-center gap-2 hover:underline ${selectedMediaId === m.id ? 'text-violet-300' : ''}`}
-                  onClick={() => {
-                    setSelectedMediaId(m.id);
-                    selectMediaForPlayback(m);
-                  }}
+                  className={`w-full text-left text-[11px] text-neutral-300 inline-flex items-center gap-2 p-1 rounded hover:bg-neutral-800/30 ${
+                    selectedMediaId === m.id ? 'bg-violet-500/10' : ''
+                  }`}
                 >
-                  <FolderOpen className="w-3 h-3" /> {m.id}
-                </button>
+                  <input
+                    type="checkbox"
+                    checked={selectedMediaIds.has(m.id)}
+                    onChange={(e) => {
+                      const newSet = new Set(selectedMediaIds);
+                      if (e.target.checked) {
+                        newSet.add(m.id);
+                      } else {
+                        newSet.delete(m.id);
+                      }
+                      setSelectedMediaIds(newSet);
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-3 h-3"
+                  />
+                  <button
+                    className="flex-1 text-left inline-flex items-center gap-2 hover:underline"
+                    onClick={() => {
+                      setSelectedMediaId(m.id);
+                      selectMediaForPlayback(m);
+                    }}
+                  >
+                    <FolderOpen className="w-3 h-3" /> {m.id}
+                  </button>
+                </div>
               ))
             );
           })()}
+        </div>
+
+        {/* Archive Section - Completely Separate */}
+        <div className="mt-6">
+          <button
+            className="w-full flex items-center justify-between text-xs uppercase tracking-wide text-neutral-400 mb-2 hover:text-neutral-300"
+            onClick={() => setShowArchived(!showArchived)}
+          >
+            <span>Archive ({archivedMedia.length})</span>
+            <span className="text-[10px]">{showArchived ? '▼' : '▶'}</span>
+          </button>
+          {showArchived && (
+            <>
+              {selectedMediaIds.size > 0 && (
+                <div className="flex items-center gap-2 mb-2 p-1.5 bg-neutral-800/40 border border-neutral-700 rounded text-xs">
+                  <span className="text-neutral-400">{selectedMediaIds.size} selected</span>
+                  <button
+                    className="text-[10px] px-2 py-0.5 bg-neutral-700 hover:bg-neutral-600 rounded text-neutral-200"
+                    onClick={() => {
+                      const filtered = mediaFilter === 'all' ? archivedMedia : archivedMedia.filter(m => m.type === mediaFilter);
+                      const allIds = new Set(filtered.map(m => m.id));
+                      setSelectedMediaIds(allIds);
+                    }}
+                  >
+                    Select All
+                  </button>
+                  <button
+                    className="text-[10px] px-2 py-0.5 bg-neutral-700 hover:bg-green-600 rounded text-neutral-200"
+                    onClick={async () => {
+                      const ids = Array.from(selectedMediaIds);
+                      await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/bulk-archive`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ media_ids: ids, archived: false })
+                      });
+                      setSelectedMediaIds(new Set());
+                      await refreshMedia();
+                      // Refresh archived list
+                      const res = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/archived`);
+                      const data = await res.json();
+                      const sorted = (data.media ?? []).sort((a: any, b: any) => {
+                        const getTimestamp = (item: any) => {
+                          const match1 = item.id?.match(/^(\d{10,13})[_\.]/);
+                          if (match1) return parseInt(match1[1]);
+                          const match2 = item.id?.match(/_(\d{10,13})[_\.]/);
+                          if (match2) return parseInt(match2[1]);
+                          const match3 = item.id?.match(/(\d{10,13})/);
+                          if (match3) return parseInt(match3[1]);
+                          return 0;
+                        };
+                        return getTimestamp(b) - getTimestamp(a);
+                      });
+                      setArchivedMedia(sorted);
+                    }}
+                  >
+                    Unarchive
+                  </button>
+                  <button
+                    className="text-[10px] px-2 py-0.5 bg-neutral-700 hover:bg-neutral-600 rounded text-neutral-200"
+                    onClick={() => setSelectedMediaIds(new Set())}
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              <div className="flex gap-1 flex-wrap mb-2">
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'all' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setMediaFilter('all')}
+                >
+                  All ({archivedMedia.length})
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'image' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setMediaFilter('image')}
+                >
+                  Images ({archivedMedia.filter(m => m.type === 'image').length})
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'video' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setMediaFilter('video')}
+                >
+                  Videos ({archivedMedia.filter(m => m.type === 'video').length})
+                </button>
+                <button
+                  className={`text-[9px] px-2 py-1 rounded ${mediaFilter === 'audio' ? 'bg-violet-500/20 text-violet-300' : 'bg-neutral-800/50 text-neutral-500 hover:text-neutral-300'}`}
+                  onClick={() => setMediaFilter('audio')}
+                >
+                  Audio ({archivedMedia.filter(m => m.type === 'audio').length})
+                </button>
+              </div>
+              <div className="space-y-2 max-h-[28vh] overflow-y-auto pr-1 rounded-md border border-neutral-800 bg-neutral-900/20">
+                {(() => {
+                  const filtered = mediaFilter === 'all' ? archivedMedia : archivedMedia.filter(m => m.type === mediaFilter);
+                  
+                  return filtered.length === 0 ? (
+                    <div className="text-xs text-neutral-500 p-2">No archived {mediaFilter === 'all' ? '' : mediaFilter} files.</div>
+                  ) : (
+                    filtered.map((m) => (
+                      <div
+                        key={m.id}
+                        className={`w-full text-left text-[11px] text-neutral-400 inline-flex items-center gap-2 p-1 rounded hover:bg-neutral-800/30 ${
+                          selectedMediaId === m.id ? 'bg-violet-500/10' : ''
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedMediaIds.has(m.id)}
+                          onChange={(e) => {
+                            const newSet = new Set(selectedMediaIds);
+                            if (e.target.checked) {
+                              newSet.add(m.id);
+                            } else {
+                              newSet.delete(m.id);
+                            }
+                            setSelectedMediaIds(newSet);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-3 h-3"
+                        />
+                        <button
+                          className="flex-1 text-left inline-flex items-center gap-2 hover:underline"
+                          onClick={() => {
+                            setSelectedMediaId(m.id);
+                            selectMediaForPlayback(m);
+                          }}
+                        >
+                          <FolderOpen className="w-3 h-3" /> {m.id}
+                        </button>
+                      </div>
+                    ))
+                  );
+                })()}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="mt-6 text-xs uppercase tracking-wide text-neutral-400 mb-2">Characters</div>
@@ -1125,10 +1666,26 @@ export default function App() {
                           {genMediaType === 'video' ? (
                             <>
                               <option value="google/veo-3.1">Google Veo 3.1</option>
+                              <option value="kwaivgi/kling-v1.6-pro">Kling v1.6 Pro</option>
+                              <option value="bytedance/seedance-1-pro">ByteDance Seedance-1-Pro</option>
+                              {customModels.filter(m => m.model_type === 'video').length > 0 && (
+                                <optgroup label="Custom Models">
+                                  {customModels.filter(m => m.model_type === 'video').map(m => (
+                                    <option key={m.model_id} value={m.model_id}>{m.friendly_name}</option>
+                                  ))}
+                                </optgroup>
+                              )}
                             </>
                           ) : (
                             <>
                               <option value="bytedance/seedream-4">ByteDance Seedream-4</option>
+                              {customModels.filter(m => m.model_type === 'image').length > 0 && (
+                                <optgroup label="Custom Models">
+                                  {customModels.filter(m => m.model_type === 'image').map(m => (
+                                    <option key={m.model_id} value={m.model_id}>{m.friendly_name}</option>
+                                  ))}
+                                </optgroup>
+                              )}
                             </>
                           )}
                         </select>
@@ -1163,16 +1720,27 @@ export default function App() {
                       </div>
                     )}
                     {genMediaType === 'video' && (
-                      <div className="flex items-end mb-3">
-                        <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
-                          <input
-                            type="checkbox"
-                            checked={genAudio}
-                            onChange={(e) => setGenAudio(e.target.checked)}
-                          />
-                          Generate audio (costs more; Veo default off)
-                        </label>
-                      </div>
+                      <>
+                        <div className="grid grid-cols-2 gap-3 mb-3">
+                          <div>
+                            <label className="block text-xs text-neutral-400 mb-1">Aspect Ratio</label>
+                            <select className="field" value={videoAspectRatio} onChange={(e) => setVideoAspectRatio(e.target.value)}>
+                              <option value="16:9">16:9 (Landscape)</option>
+                              <option value="9:16">9:16 (Portrait)</option>
+                            </select>
+                          </div>
+                          <div className="flex items-end">
+                            <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
+                              <input
+                                type="checkbox"
+                                checked={genAudio}
+                                onChange={(e) => setGenAudio(e.target.checked)}
+                              />
+                              Generate audio (costs more)
+                            </label>
+                          </div>
+                        </div>
+                      </>
                     )}
                     <div className="grid grid-cols-2 gap-3 mb-3">
                       <div>
@@ -1194,7 +1762,7 @@ export default function App() {
                         <div className="text-xs text-neutral-500 mt-6">No character selected</div>
                       )}
                     </div>
-                    {provider === 'vertex' ? (
+                    {genMediaType === 'video' ? (
                       <div className="space-y-3 mb-3">
                         <div className="flex items-center gap-4">
                           <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
@@ -1226,25 +1794,7 @@ export default function App() {
                                 setVxRefImageIds([]);
                               }}
                             />
-                            Start/End frames
-                          </label>
-                          <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
-                            <input
-                              type="radio"
-                              name="vxImageMode"
-                              checked={vxImageMode === 'reference'}
-                              onChange={() => {
-                                setVxImageMode('reference');
-                                setVxUsePrevLast(false);
-                                setVxStartImageId(null);
-                                setVxEndImageId(null);
-                                setVxStartFromVideoId(null);
-                                setVxStartFramePath(null);
-                                setVxEndFromVideoId(null);
-                                setVxEndFramePath(null);
-                              }}
-                            />
-                            Reference images
+                            Start/End frames {provider === 'vertex' ? '(Veo 3.1 fast)' : provider === 'replicate' && (replicateModel.includes('kling') || replicateModel.includes('seedance')) ? '(Kling/Seedance)' : ''}
                           </label>
                         </div>
                         <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
@@ -1443,50 +1993,6 @@ export default function App() {
                         </div>
                         </>
                         ) : null}
-                        <div>
-                          <label className="block text-xs text-neutral-400 mb-1">Reference images (mutually exclusive with start/end)</label>
-                          <div className="grid grid-cols-4 gap-2 max-h-[200px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
-                            {media.filter((m) => m.type === 'image').length === 0 ? (
-                              <div className="col-span-4 text-xs text-neutral-500 text-center py-4">No images yet</div>
-                            ) : (
-                              media.filter((m) => m.type === 'image').map((m) => {
-                                const selected = vxRefImageIds.includes(m.id);
-                                return (
-                                  <button
-                                    key={m.id}
-                                    disabled={vxImageMode !== 'reference'}
-                                    className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
-                                      selected ? 'border-violet-500 ring-2 ring-violet-500/50' : 'border-neutral-700 hover:border-violet-400'
-                                    } ${vxImageMode !== 'reference' ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
-                                    onClick={() => {
-                                      if (vxImageMode === 'reference') {
-                                        setVxRefImageIds((prev) =>
-                                          selected ? prev.filter((id) => id !== m.id) : [...prev, m.id]
-                                        );
-                                      }
-                                    }}
-                                  >
-                                    <img
-                                      src={`http://127.0.0.1:8000${m.url}`}
-                                      className="w-full h-full object-cover"
-                                      alt={m.id}
-                                    />
-                                    {selected ? (
-                                      <div className="absolute inset-0 bg-violet-500/20 flex items-center justify-center">
-                                        <div className="bg-violet-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
-                                          ✓
-                                        </div>
-                                      </div>
-                                    ) : null}
-                                    <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-[8px] px-1 py-0.5 truncate">
-                                      {m.id}
-                                    </div>
-                                  </button>
-                                );
-                              })
-                            )}
-                          </div>
-                        </div>
                       </div>
                     ) : null}
                     {provider === 'replicate' && genMediaType === 'image' && (
@@ -1670,12 +2176,8 @@ export default function App() {
                                 ? `${genPrompt}\nCharacter style: ${activeChar.style_tokens}`
                                 : genPrompt;
                             if (provider === 'vertex') {
-                              if (vxImageMode === 'reference') {
-                                const manualRefs = vxRefImageIds.map(id => media.find(m => m.id === id)?.path!).filter(Boolean) as string[];
-                                refImages = manualRefs.length ? manualRefs : (charRefPaths ?? undefined);
-                                startFramePath = undefined;
-                                endFramePath = undefined;
-                              } else if (vxImageMode === 'start_end') {
+                              // Vertex Veo 3.1 fast only supports start and/or end frames (no reference images)
+                              if (vxImageMode === 'start_end') {
                                 // Priority: vxUsePrevLast > vxStartFramePath (extracted from video) > vxStartImageId
                                 if (vxUsePrevLast) {
                                   // Fetch last frame from previous shot
@@ -1694,10 +2196,9 @@ export default function App() {
                                 // End frame is always an image (vxEndImageId selected)
                                 endFramePath = vxEndImageId ? media.find(m => m.id === vxEndImageId)?.path : undefined;
                               } else {
-                                // none
+                                // none - no frames provided
                                 startFramePath = undefined;
                                 endFramePath = undefined;
-                                refImages = charRefPaths;
                               }
                             } else {
                               // Replicate
@@ -1706,8 +2207,28 @@ export default function App() {
                                 refImages = charRefPaths || replicateRefImages.map(id => media.find(m => m.id === id)?.path).filter(Boolean) as string[];
                                 startFramePath = undefined;
                               } else {
-                                // For video generation, use reference_frame only
-                                startFramePath = reference_frame;
+                                // For video generation, use start/end frames (same logic as Vertex)
+                                if (vxImageMode === 'start_end') {
+                                  // Priority: vxUsePrevLast > vxStartFramePath (extracted from video) > vxStartImageId
+                                  if (vxUsePrevLast) {
+                                    const shots = sceneDetail?.shots || [];
+                                    const lastShot = shots[shots.length - 1];
+                                    if (lastShot?.last_frame_path) {
+                                      startFramePath = lastShot.last_frame_path;
+                                    } else {
+                                      alert('Previous shot has no last frame. Generate a shot first or select a start frame manually.');
+                                      setIsGenerating(false);
+                                      return;
+                                    }
+                                  } else {
+                                    startFramePath = vxStartFramePath || (vxStartImageId ? media.find(m => m.id === vxStartImageId)?.path : undefined);
+                                  }
+                                  // End frame is always an image (vxEndImageId selected)
+                                  endFramePath = vxEndImageId ? media.find(m => m.id === vxEndImageId)?.path : undefined;
+                                } else {
+                                  // Legacy reference_frame fallback
+                                  startFramePath = reference_frame;
+                                }
                               }
                             }
                             jobId = startJob(`Generating ${genMediaType} ${selectedSceneId}`);
@@ -1720,11 +2241,11 @@ export default function App() {
                               model: provider === 'replicate' ? replicateModel : 'veo-3.1-fast-generate-preview',
                               duration: genMediaType === 'video' ? 8 : undefined,
                               resolution: genMediaType === 'video' ? '1080p' : undefined,
-                              aspect_ratio: genMediaType === 'image' && replicateModel === 'bytedance/seedream-4' ? seedreamAspectRatio : '16:9',
-                              reference_frame: provider === 'replicate' && genMediaType === 'video' ? startFramePath : undefined,
-                              start_frame_path: provider === 'vertex' ? startFramePath : undefined,
-                              end_frame_path: provider === 'vertex' ? endFramePath : undefined,
-                              reference_images: (provider === 'vertex' || (provider === 'replicate' && genMediaType === 'image')) ? refImages : undefined,
+                              aspect_ratio: genMediaType === 'image' ? seedreamAspectRatio : videoAspectRatio,
+                              // For video generation, send start_frame_path and end_frame_path for all providers
+                              start_frame_path: genMediaType === 'video' ? startFramePath : undefined,
+                              end_frame_path: genMediaType === 'video' ? endFramePath : undefined,
+                              reference_images: (provider === 'replicate' && genMediaType === 'image') ? refImages : undefined,
                               generate_audio: provider === 'replicate' && genMediaType === 'video' ? genAudio : false,
                               num_outputs: genMediaType === 'image' && replicateModel === 'bytedance/seedream-4' ? seedreamNumOutputs : undefined,
                               character_id: selectedCharacterId || undefined
@@ -1749,9 +2270,22 @@ export default function App() {
                               if (genMediaType === 'image') {
                                 // For image generation, refresh media to show new images
                                 await refreshMedia();
+                                
+                                // Auto-select the first generated image
+                                if (data.images && data.images.length > 0) {
+                                  const firstImageUrl = `http://127.0.0.1:8000${data.images[0].replace('project_data/', '/files/')}`;
+                                  setCurrentImageUrl(firstImageUrl);
+                                  setNowPlaying('');
+                                  setPlayError('');
+                                }
+                                
                                 setIsGenOpen(false);
                                 if (jobId) finishJob(jobId, 'done');
-                                alert(`Generated ${data.images?.length || 1} image(s) successfully! Check the media library.`);
+                                const imageList = data.images?.map((img: string) => {
+                                  const filename = img.split('/').pop();
+                                  return `• ${filename}`;
+                                }).join('\n') || '';
+                                alert(`Generated ${data.images?.length || 1} image(s)!\n\n${imageList}\n\nImages are now visible and the first one is selected in the preview.`);
                               } else {
                                 // For video generation, show the video
                                 const url = `http://127.0.0.1:8000${data.file_url}`;
@@ -2373,6 +2907,7 @@ export default function App() {
                     }`}
                     style={{ width: `${widthPx}px` }}
                     onClick={() => {
+                      setCurrentImageUrl(null); // Clear any image preview
                       setCurrentVideoUrl(vidUrl);
                       setNowPlaying(vidUrl);
                       setSelectedShotId(sh.shot_id);

@@ -29,6 +29,8 @@ from backend.storage.files import (
     upsert_character,
     get_character,
     delete_character,
+    archive_media,
+    bulk_archive_media,
 )
 from backend.ai.replicate_client import ReplicateClient
 from backend.ai.vertex_client import VertexClient
@@ -40,6 +42,61 @@ app = FastAPI(title="OpenFilmAI Backend", version="0.1.0")
 
 PROJECT_DATA_DIR = Path("project_data")
 PROJECT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# CORS for Electron dev served via Vite - MUST be added AFTER app init but BEFORE routes
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+# Serve project_data files (videos, frames) under /files/*
+# StaticFiles doesn't inherit middleware, so we need a custom wrapper
+from starlette.responses import FileResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+@app.get("/files/{full_path:path}")
+async def serve_files(full_path: str):
+    """Serve static files with CORS headers"""
+    file_path = PROJECT_DATA_DIR / full_path
+    if not file_path.exists() or not file_path.is_file():
+        raise StarletteHTTPException(status_code=404, detail="File not found")
+    return FileResponse(
+        file_path,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+@app.head("/files/{full_path:path}")
+async def serve_files_head(full_path: str):
+    """Serve static files HEAD requests with CORS headers"""
+    file_path = PROJECT_DATA_DIR / full_path
+    if not file_path.exists() or not file_path.is_file():
+        raise StarletteHTTPException(status_code=404, detail="File not found")
+    import os
+    file_size = os.path.getsize(file_path)
+    # Detect MIME type
+    import mimetypes
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    return FileResponse(
+        file_path,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Content-Length": str(file_size),
+            "Content-Type": mime_type or "application/octet-stream",
+        }
+    )
 
 @app.on_event("startup")
 async def startup_event():
@@ -75,20 +132,6 @@ def _save_jobs():
     JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(JOBS_FILE, "w") as f:
         json.dump(background_jobs, f, indent=2)
-
-# Serve project_data files (videos, frames) under /files/*
-app.mount("/files", StaticFiles(directory=str(PROJECT_DATA_DIR)), name="files")
-# CORS for Electron dev served via Vite
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])
@@ -243,6 +286,7 @@ def generate_shot(req: ShotGenerateRequest):
             
             if req.media_type == "image":
                 # Image generation (e.g., Seedream-4)
+                print(f"[IMAGE GEN] Model: {model_used}, num_outputs: {req.num_outputs}, ref_imgs: {len(ref_imgs) if ref_imgs else 0}")
                 output_urls = client_r.generate_image(
                     model=model_used,
                     prompt=req.prompt,
@@ -250,14 +294,18 @@ def generate_shot(req: ShotGenerateRequest):
                     aspect_ratio=req.aspect_ratio or "16:9",
                     num_outputs=req.num_outputs or 1,
                 )
+                print(f"[IMAGE GEN] Received {len(output_urls)} image URLs from API")
                 # For images, we'll save them to media/images and create image items
                 import requests
                 media_images_dir = PROJECT_DATA_DIR / req.project_id / "media" / "images"
                 media_images_dir.mkdir(parents=True, exist_ok=True)
                 
                 saved_images = []
+                import time
+                timestamp = int(time.time())
                 for idx, img_url in enumerate(output_urls):
-                    img_filename = f"{shot_id}_{idx}.jpg" if len(output_urls) > 1 else f"{shot_id}.jpg"
+                    # Put timestamp first for better sorting
+                    img_filename = f"{timestamp}_{shot_id}_{idx}.jpg" if len(output_urls) > 1 else f"{timestamp}_{shot_id}.jpg"
                     img_path = media_images_dir / img_filename
                     
                     # Download image
@@ -273,7 +321,8 @@ def generate_shot(req: ShotGenerateRequest):
                         "id": img_filename,
                         "type": "image",
                         "path": f"project_data/{rel_img}",
-                        "url": f"/files/{rel_img}"
+                        "url": f"/files/{rel_img}",
+                        "timestamp": timestamp
                     })
                     saved_images.append(f"project_data/{rel_img}")
                 
@@ -281,10 +330,21 @@ def generate_shot(req: ShotGenerateRequest):
                 return {"status": "ok", "shot_id": shot_id, "images": saved_images, "model": model_used}
             else:
                 # Video generation
+                # Normalize start/end frame paths
+                start_img = None
+                end_img = None
+                if req.start_frame_path:
+                    start_img = str(_normalize_path(req.start_frame_path))
+                elif req.reference_frame:
+                    start_img = str(_normalize_path(req.reference_frame))
+                if req.end_frame_path:
+                    end_img = str(_normalize_path(req.end_frame_path))
+                
                 output_url = client_r.generate_video(
                     model=model_used,
                     prompt=req.prompt,
-                    first_frame_image=req.reference_frame,
+                    first_frame_image=start_img,
+                    last_frame_image=end_img,
                     reference_images=ref_imgs or None,
                     duration=req.duration or 8,
                     resolution=req.resolution or "1080p",
@@ -775,6 +835,25 @@ def api_list_media(project_id: str):
             items = list_media(project_id)
     except Exception:
         pass
+    
+    # Backfill timestamps for any items missing them
+    import time as time_module
+    meta = read_metadata(project_id)
+    media_list = meta.get("media", [])
+    modified = False
+    for item in media_list:
+        if "timestamp" not in item:
+            # Try to extract timestamp from ID, or use current time
+            try:
+                match = __import__('re').match(r'^(\d{10,13})', item.get("id", ""))
+                item["timestamp"] = int(match.group(1)) if match else int(time_module.time())
+            except:
+                item["timestamp"] = int(time_module.time())
+            modified = True
+    if modified:
+        write_metadata(project_id, meta)
+        items = list_media(project_id)
+    
     return {"media": items}
 
 
@@ -796,6 +875,7 @@ async def api_upload_media(project_id: str, file: UploadFile = File(...)):
         "type": mtype[:-1] if mtype.endswith("s") else mtype,
         "path": f"project_data/{rel_from_project}",
         "url": file_url,
+        "source": "uploaded",
     }
     add_media(project_id, item)
     return {"status": "ok", "item": item}
@@ -1013,11 +1093,16 @@ def api_scan_media(project_id: str):
             return
         rel_from_project = str(file_path.relative_to(PROJECT_DATA_DIR))
         url = f"/files/{rel_from_project}"
+        import time as time_module
+        # Auto-tag source based on filename patterns
+        source = "extracted" if ("_first.png" in file_id or "_last.png" in file_id) else "generated"
         item = {
             "id": file_id,
             "type": kind,
             "path": f"project_data/{rel_from_project}",
             "url": url,
+            "source": source,
+            "timestamp": int(time_module.time()),
         }
         existing.append(item)
         existing_ids.add(file_id)
@@ -1039,6 +1124,48 @@ def api_scan_media(project_id: str):
     meta["media"] = existing
     write_metadata(project_id, meta)
     return {"status": "ok", "indexed": len(new_items), "items": new_items}
+
+
+class ArchiveMediaRequest(BaseModel):
+    media_id: str
+    archived: bool = True
+
+
+class BulkArchiveMediaRequest(BaseModel):
+    media_ids: List[str]
+    archived: bool = True
+
+
+@app.put("/storage/{project_id}/media/archive")
+def api_archive_media(project_id: str, body: ArchiveMediaRequest):
+    """Archive or unarchive a single media item."""
+    result = archive_media(project_id, body.media_id, body.archived)
+    if not result["success"]:
+        return {"status": "error", "detail": result.get("error", "Unknown error")}
+    return {"status": "ok", "archived": body.archived}
+
+
+@app.post("/storage/{project_id}/media/bulk-archive")
+def api_bulk_archive_media(project_id: str, body: BulkArchiveMediaRequest):
+    """Archive or unarchive multiple media items."""
+    result = bulk_archive_media(project_id, body.media_ids, body.archived)
+    response = {
+        "status": "ok", 
+        "count": result["count"], 
+        "archived": body.archived
+    }
+    if result["skipped"]:
+        response["skipped"] = result["skipped"]
+        response["message"] = f"{result['count']} items archived. {len(result['skipped'])} items skipped (in use by characters)."
+    return response
+
+
+@app.get("/storage/{project_id}/media/archived")
+def api_list_archived_media(project_id: str):
+    """Get list of archived media items."""
+    all_media = list_media(project_id, include_archived=True)
+    archived = [m for m in all_media if m.get("archived", False)]
+    return {"media": archived}
 
 # Settings
 @app.get("/settings")
@@ -1291,3 +1418,224 @@ def api_update_character(project_id: str, character_id: str, body: CharacterUpda
 def api_delete_character(project_id: str, character_id: str):
     deleted = delete_character(project_id, character_id)
     return {"status": "ok", "deleted": deleted}
+
+
+# ============================================================================
+# Custom Replicate Models
+# ============================================================================
+
+class CustomModelFetchRequest(BaseModel):
+    model_id: str  # e.g. "owner/model-name" or full URL
+
+
+@app.post("/replicate/fetch-schema")
+def api_fetch_replicate_schema(req: CustomModelFetchRequest):
+    """
+    Fetch and parse schema from a Replicate model.
+    Auto-detects if it's an image or video model.
+    Returns parsed schema with type detection.
+    """
+    try:
+        import requests
+        
+        # Extract owner/model-name from URL or ID
+        model_id = req.model_id.strip()
+        if model_id.startswith("http"):
+            # Extract from URL like "https://replicate.com/owner/model-name"
+            parts = model_id.rstrip("/").split("/")
+            if len(parts) >= 2:
+                model_id = f"{parts[-2]}/{parts[-1]}"
+            else:
+                return {"status": "error", "detail": "Invalid Replicate URL"}
+        
+        # Validate format
+        if "/" not in model_id:
+            return {"status": "error", "detail": "Model ID must be in format: owner/model-name"}
+        
+        owner, name = model_id.split("/", 1)
+        
+        # Fetch schema from Replicate API
+        schema_url = f"https://replicate.com/{owner}/{name}/api/schema"
+        print(f"[CUSTOM MODEL] Fetching schema from: {schema_url}")
+        
+        response = requests.get(schema_url, timeout=10)
+        response.raise_for_status()
+        schema = response.json()
+        
+        # Parse schema to detect model type and extract parameters
+        model_type = _detect_model_type(schema)
+        parameters = _parse_schema_parameters(schema)
+        
+        print(f"[CUSTOM MODEL] Detected type: {model_type}")
+        print(f"[CUSTOM MODEL] Parameters: {len(parameters)} found")
+        
+        return {
+            "status": "ok",
+            "model_id": model_id,
+            "model_type": model_type,
+            "schema": schema,
+            "parameters": parameters,
+        }
+    except requests.exceptions.RequestException as e:
+        return {"status": "error", "detail": f"Failed to fetch schema: {str(e)}"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _detect_model_type(schema: dict) -> str:
+    """
+    Detect if a Replicate model is 'image' or 'video' based on its schema.
+    Returns: 'image', 'video', or 'unknown'
+    """
+    # Check input parameters for telltale signs
+    input_props = schema.get("components", {}).get("schemas", {}).get("Input", {}).get("properties", {})
+    
+    # Video indicators
+    video_indicators = ["duration", "fps", "video", "video_path", "video_url"]
+    has_video_input = any(key in input_props for key in video_indicators)
+    
+    # Check for duration parameter (strong video signal)
+    if "duration" in input_props:
+        return "video"
+    
+    # Check output schema
+    output_schema = schema.get("components", {}).get("schemas", {}).get("Output", {})
+    
+    # If output is array of URIs, could be images or video
+    # Check description or title for hints
+    title = schema.get("info", {}).get("title", "").lower()
+    description = schema.get("info", {}).get("description", "").lower()
+    
+    if "video" in title or "video" in description or has_video_input:
+        return "video"
+    
+    if "image" in title or "image" in description:
+        return "image"
+    
+    # Default to image if output is array (most common for multi-image generation)
+    if output_schema.get("type") == "array":
+        return "image"
+    
+    return "unknown"
+
+
+def _parse_schema_parameters(schema: dict) -> list:
+    """
+    Parse Replicate schema and extract input parameters with metadata.
+    Returns list of parameter definitions for UI form generation.
+    """
+    input_props = schema.get("components", {}).get("schemas", {}).get("Input", {}).get("properties", {})
+    required_fields = schema.get("components", {}).get("schemas", {}).get("Input", {}).get("required", [])
+    
+    parameters = []
+    
+    for key, prop in input_props.items():
+        param = {
+            "name": key,
+            "type": prop.get("type", "string"),
+            "title": prop.get("title", key),
+            "description": prop.get("description", ""),
+            "default": prop.get("default"),
+            "required": key in required_fields,
+        }
+        
+        # Add type-specific metadata
+        if param["type"] in ["integer", "number"]:
+            param["minimum"] = prop.get("minimum")
+            param["maximum"] = prop.get("maximum")
+        
+        if "enum" in prop:
+            param["enum"] = prop["enum"]
+            param["type"] = "enum"
+        
+        if prop.get("format") == "uri":
+            param["format"] = "uri"
+        
+        # Skip overly complex types
+        if param["type"] in ["object", "array"] and key not in ["image", "video", "audio"]:
+            continue
+        
+        parameters.append(param)
+    
+    return parameters
+
+
+class CustomModelSaveRequest(BaseModel):
+    model_id: str
+    friendly_name: str
+    model_type: str  # 'image' or 'video'
+    schema: dict
+    parameters: list
+
+
+@app.post("/settings/custom-models")
+def api_save_custom_model(req: CustomModelSaveRequest):
+    """Save a custom Replicate model to settings."""
+    try:
+        settings = read_settings()
+        
+        if "custom_replicate_models" not in settings:
+            settings["custom_replicate_models"] = []
+        
+        # Check if model already exists
+        existing_idx = next(
+            (i for i, m in enumerate(settings["custom_replicate_models"]) if m["model_id"] == req.model_id),
+            None
+        )
+        
+        model_data = {
+            "model_id": req.model_id,
+            "friendly_name": req.friendly_name,
+            "model_type": req.model_type,
+            "schema": req.schema,
+            "parameters": req.parameters,
+            "added_at": int(time.time()),
+        }
+        
+        if existing_idx is not None:
+            # Update existing
+            settings["custom_replicate_models"][existing_idx] = model_data
+        else:
+            # Add new
+            settings["custom_replicate_models"].append(model_data)
+        
+        write_settings(settings)
+        
+        return {"status": "ok", "model": model_data}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@app.get("/settings/custom-models")
+def api_list_custom_models():
+    """List all custom Replicate models."""
+    try:
+        settings = read_settings()
+        models = settings.get("custom_replicate_models", [])
+        return {"status": "ok", "models": models}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@app.delete("/settings/custom-models/{model_id:path}")
+def api_delete_custom_model(model_id: str):
+    """Delete a custom Replicate model."""
+    try:
+        settings = read_settings()
+        
+        if "custom_replicate_models" not in settings:
+            return {"status": "ok", "deleted": False}
+        
+        original_count = len(settings["custom_replicate_models"])
+        settings["custom_replicate_models"] = [
+            m for m in settings["custom_replicate_models"]
+            if m["model_id"] != model_id
+        ]
+        
+        deleted = len(settings["custom_replicate_models"]) < original_count
+        
+        write_settings(settings)
+        
+        return {"status": "ok", "deleted": deleted}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}

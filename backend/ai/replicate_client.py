@@ -45,24 +45,83 @@ class ReplicateClient:
         aspect_ratio: str = "16:9",
         generate_audio: bool = True,
     ) -> str:
-        """Generate video using Replicate. Supports various video models."""
+        """
+        Generate video using Replicate. Supports various video models.
+        
+        Supported models:
+        - google/veo-3.1: Start/end frames, no reference images
+        - kwaivgi/kling-v2.5-turbo-pro: Start/end frames, no reference images
+        """
         owner, name = model.split("/", 1) if "/" in model else ("google", "veo-3.1")
         url = f"https://api.replicate.com/v1/models/{owner}/{name}/predictions"
 
         inputs: Dict[str, object] = {"prompt": prompt}
-        if first_frame_image:
-            inputs["image"] = self._to_data_url(first_frame_image)
-        if last_frame_image:
-            inputs["last_frame"] = self._to_data_url(last_frame_image)
-        if reference_images:
-            inputs["reference_images"] = [self._to_data_url(p) for p in reference_images]
-        inputs["duration"] = duration
-        inputs["resolution"] = resolution
-        inputs["aspect_ratio"] = aspect_ratio
-        inputs["generate_audio"] = bool(generate_audio)
+        
+        # Model-specific parameter handling
+        if "kling" in model.lower():
+            # Kling models (v1.6, v2.1, v2.5) use specific parameter names
+            # Based on API docs: https://replicate.com/kwaivgi/kling-v1.6-pro/api/schema
+            if first_frame_image:
+                inputs["image"] = self._to_data_url(first_frame_image)
+                print(f"[REPLICATE] Kling: Added image (start frame)")
+            if last_frame_image:
+                inputs["last_frame"] = self._to_data_url(last_frame_image)
+                print(f"[REPLICATE] Kling: Added last_frame")
+            # Kling v1.6 params - being conservative with what we send
+            # Only duration is confirmed to work across Kling models
+            if duration:
+                inputs["duration"] = duration
+            # Note: aspect_ratio and mode parameters may vary by model version
+            # Only add them if we're sure the model supports them
+            print(f"[REPLICATE] Kling model: {model}, duration: {duration}")
+        elif "seedance" in model.lower():
+            # ByteDance Seedance-1-Pro
+            # API: https://replicate.com/bytedance/seedance-1-pro/api/schema
+            if first_frame_image:
+                inputs["image"] = self._to_data_url(first_frame_image)
+                print(f"[REPLICATE] Seedance: Added image (start frame)")
+            if last_frame_image:
+                inputs["last_frame_image"] = self._to_data_url(last_frame_image)
+                print(f"[REPLICATE] Seedance: Added last_frame_image")
+            # Seedance params
+            inputs["duration"] = duration  # 2-12 seconds, default 5
+            inputs["resolution"] = resolution  # Default "1080p"
+            inputs["aspect_ratio"] = aspect_ratio  # Default "16:9"
+            inputs["fps"] = 24  # Default frame rate
+            print(f"[REPLICATE] Seedance model: {model}, duration: {duration}, resolution: {resolution}")
+        else:
+            # Generic video model (Veo, etc)
+            if first_frame_image:
+                inputs["image"] = self._to_data_url(first_frame_image)
+            if last_frame_image:
+                inputs["last_frame"] = self._to_data_url(last_frame_image)
+            # Note: reference_images ignored for models that don't support them
+            inputs["duration"] = duration
+            inputs["resolution"] = resolution
+            inputs["aspect_ratio"] = aspect_ratio
+            inputs["generate_audio"] = bool(generate_audio)
 
-        r = requests.post(url, headers=self._headers(), json={"input": inputs}, timeout=self.timeout)
-        r.raise_for_status()
+        # Log the full request for debugging
+        request_payload = {"input": inputs}
+        print(f"[REPLICATE] Full video request payload: {request_payload}")
+        print(f"[REPLICATE] URL: {url}")
+        
+        try:
+            r = requests.post(url, headers=self._headers(), json=request_payload, timeout=self.timeout)
+            r.raise_for_status()
+        except requests.exceptions.HTTPError as http_err:
+            # Capture and log the full error response from Replicate
+            error_body = r.text if hasattr(r, 'text') else str(http_err)
+            print(f"[REPLICATE] HTTP Error {r.status_code}: {error_body}")
+            try:
+                error_json = r.json()
+                print(f"[REPLICATE] Error JSON: {error_json}")
+                if 'detail' in error_json:
+                    raise RuntimeError(f"Replicate API Error: {error_json['detail']}")
+            except:
+                pass
+            raise RuntimeError(f"Replicate API HTTP {r.status_code}: {error_body}")
+        
         data = r.json()
         pred_id = data.get("id")
         if not pred_id:
@@ -93,16 +152,17 @@ class ReplicateClient:
         
         # Model-specific handling
         if "seedream" in model.lower() or model == "bytedance/seedream-4":
-            # Seedream-4 specific parameters
+            # Seedream-4 specific parameters (from actual API docs)
             if aspect_ratio:
                 inputs["aspect_ratio"] = aspect_ratio
             if num_outputs is not None:
-                inputs["num_outputs"] = num_outputs
-            # Reference images for Seedream-4 (if supported)
-            if reference_images:
-                # Seedream-4 may support reference images, check model docs
-                # For now, we'll add them if provided
-                inputs["reference_image"] = self._to_data_url(reference_images[0]) if reference_images else None
+                # Seedream-4 uses "max_images" not "num_outputs"
+                inputs["max_images"] = num_outputs
+            # Reference images for Seedream-4
+            # API uses "image_input" (array) not "reference_images"
+            if reference_images and len(reference_images) > 0:
+                inputs["image_input"] = [self._to_data_url(p) for p in reference_images]
+                print(f"[REPLICATE] Sending {len(reference_images)} reference image(s) to Seedream-4 via 'image_input'")
         else:
             # Generic image model handling
             if aspect_ratio:
@@ -116,7 +176,11 @@ class ReplicateClient:
         # Add any additional kwargs
         inputs.update(kwargs)
 
-        r = requests.post(url, headers=self._headers(), json={"input": inputs}, timeout=self.timeout)
+        # Log the full request for debugging
+        request_payload = {"input": inputs}
+        print(f"[REPLICATE] Full request payload: {request_payload}")
+        
+        r = requests.post(url, headers=self._headers(), json=request_payload, timeout=self.timeout)
         r.raise_for_status()
         data = r.json()
         pred_id = data.get("id")
