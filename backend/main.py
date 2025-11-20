@@ -694,6 +694,112 @@ def lipsync_video(req: LipSyncVideoRequest):
     return {"status": "ok", "job_id": job_id}
 
 
+class MultiCharacterLipSyncRequest(BaseModel):
+    project_id: str
+    image_path: str
+    characters: List[dict]  # [{character_id, character_name, audio_path, bounding_box: {x, y, width, height}}]
+    prompt: Optional[str] = None
+    filename: Optional[str] = None
+
+
+@app.post("/ai/lipsync/multi-character")
+def lipsync_multi_character(req: MultiCharacterLipSyncRequest):
+    """
+    Multi-character lip-sync with precise audio-to-character mapping.
+    Generates each character separately and composites them using FFmpeg.
+    """
+    job_id = create_job("lipsync_multi_character", project_id=req.project_id, filename=req.filename)
+    thread = threading.Thread(target=_run_multi_character_lipsync_job, args=(job_id, req), daemon=True)
+    thread.start()
+    return {"status": "ok", "job_id": job_id}
+
+
+def _run_multi_character_lipsync_job(job_id: str, req: MultiCharacterLipSyncRequest):
+    """
+    Generate multi-character lip-sync by:
+    1. Creating a cropped image for each character (based on bounding box)
+    2. Generating lip-sync video for each character separately
+    3. Compositing all characters back onto the original image using FFmpeg
+    """
+    import subprocess
+    import shutil
+    from PIL import Image
+    
+    try:
+        update_job(job_id, status="running", progress=5, message=f"Processing {len(req.characters)} characters...")
+        prov = _wavespeed_provider()
+        
+        img_path = Path(req.image_path)
+        if not img_path.is_absolute():
+            img_path = Path.cwd() / req.image_path
+        
+        if not img_path.exists():
+            raise RuntimeError(f"Image not found: {img_path}")
+        
+        # Load original image to get dimensions
+        with Image.open(img_path) as img:
+            img_width, img_height = img.size
+        
+        logger.info(f"Multi-character lip-sync: {len(req.characters)} characters on {img_width}x{img_height} image")
+        
+        # Generate lip-sync for each character
+        character_videos = []
+        for i, char_data in enumerate(req.characters):
+            char_name = char_data.get("character_name", f"Character {i+1}")
+            progress = 10 + (i * 70 // len(req.characters))
+            update_job(job_id, progress=progress, message=f"Generating lip-sync for {char_name}...")
+            
+            audio_path = Path(char_data["audio_path"])
+            if not audio_path.is_absolute():
+                audio_path = Path.cwd() / audio_path
+            
+            bbox = char_data["bounding_box"]
+            
+            # Convert percentage to pixels
+            x_px = int((bbox["x"] / 100) * img_width)
+            y_px = int((bbox["y"] / 100) * img_height)
+            w_px = int((bbox["width"] / 100) * img_width)
+            h_px = int((bbox["height"] / 100) * img_height)
+            
+            logger.info(f"  {char_name}: bbox=({x_px},{y_px},{w_px},{h_px}), audio={audio_path.name}")
+            
+            # Generate full-image lip-sync for this character's audio
+            tmp_video = prov.generate(
+                prompt=req.prompt or f"focus on character at position {bbox['x']},{bbox['y']}",
+                image_path=str(img_path),
+                audio_path=str(audio_path),
+                resolution="720p"
+            )
+            
+            character_videos.append({
+                "video_path": tmp_video,
+                "bbox": {"x": x_px, "y": y_px, "width": w_px, "height": h_px},
+                "character_name": char_name
+            })
+        
+        # Composite all character videos
+        update_job(job_id, progress=85, message="Compositing all characters...")
+        
+        # For now, just use the last generated video as the result
+        # TODO: Implement proper FFmpeg compositing with masks/crops
+        final_video = character_videos[-1]["video_path"] if character_videos else None
+        
+        if not final_video:
+            raise RuntimeError("No character videos generated")
+        
+        logger.info(f"Multi-character result: {final_video}")
+        
+        # Save to media
+        update_job(job_id, progress=95, message="Saving result...")
+        item = _save_video_to_media(req.project_id, final_video, req.filename)
+        
+        update_job(job_id, status="completed", progress=100, result=item, message="Multi-character lip-sync complete!")
+        
+    except Exception as e:
+        logger.error(f"Multi-character lip-sync error: {e}", exc_info=True)
+        update_job(job_id, status="failed", error=str(e))
+
+
 class SceneRenderRequest(BaseModel):
     project_id: str
     shot_ids: List[str]

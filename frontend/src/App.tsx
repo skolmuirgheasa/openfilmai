@@ -83,6 +83,24 @@ export default function App() {
   const [voiceSceneName, setVoiceSceneName] = useState<string>('Untitled Voice Scene');
   const [voiceSceneRecordingSlotId, setVoiceSceneRecordingSlotId] = useState<string | null>(null);
   const voiceSceneRecorderRef = useRef<MediaRecorder | null>(null);
+  
+  // Multi-Character Lip-Sync state
+  type CharacterBoundingBox = {
+    character_id: string;
+    character_name: string;
+    x: number; // percentage 0-100
+    y: number; // percentage 0-100
+    width: number; // percentage 0-100
+    height: number; // percentage 0-100
+    audio_track_id: string | null; // which audio file is assigned to this character
+  };
+  const [isMultiLipSyncOpen, setIsMultiLipSyncOpen] = useState<boolean>(false);
+  const [multiLipSyncImageId, setMultiLipSyncImageId] = useState<string | null>(null);
+  const [multiLipSyncBoundingBoxes, setMultiLipSyncBoundingBoxes] = useState<CharacterBoundingBox[]>([]);
+  const [multiLipSyncPrompt, setMultiLipSyncPrompt] = useState<string>('');
+  const [multiLipSyncOutputName, setMultiLipSyncOutputName] = useState<string>('');
+  const multiLipSyncCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [drawingBox, setDrawingBox] = useState<{ startX: number; startY: number; character_id: string } | null>(null);
   const [lipMode, setLipMode] = useState<'video' | 'image'>('video');
   const [lipVideoId, setLipVideoId] = useState<string | null>(null);
   const [lipImageId, setLipImageId] = useState<string | null>(null);
@@ -491,6 +509,142 @@ export default function App() {
       voiceSceneRecorderRef.current = null;
     }
     setVoiceSceneRecordingSlotId(null);
+  }
+  
+  function addCharacterBoundingBox() {
+    if (!selectedCharacterId) {
+      alert('Select a character first');
+      return;
+    }
+    const char = characters.find(c => c.character_id === selectedCharacterId);
+    if (!char) return;
+    
+    // Check if this character already has a bounding box
+    if (multiLipSyncBoundingBoxes.some(b => b.character_id === char.character_id)) {
+      alert(`${char.name} already has a bounding box. Remove it first to add a new one.`);
+      return;
+    }
+    
+    // Offset each new box slightly so they don't overlap
+    const offset = multiLipSyncBoundingBoxes.length * 5;
+    
+    const newBox: CharacterBoundingBox = {
+      character_id: char.character_id,
+      character_name: char.name,
+      x: 25 + offset,
+      y: 25 + offset,
+      width: 20,
+      height: 30,
+      audio_track_id: null
+    };
+    setMultiLipSyncBoundingBoxes([...multiLipSyncBoundingBoxes, newBox]);
+  }
+  
+  function removeCharacterBoundingBox(character_id: string) {
+    setMultiLipSyncBoundingBoxes(multiLipSyncBoundingBoxes.filter(b => b.character_id !== character_id));
+  }
+  
+  function updateCharacterBoundingBox(character_id: string, updates: Partial<CharacterBoundingBox>) {
+    setMultiLipSyncBoundingBoxes(multiLipSyncBoundingBoxes.map(b => 
+      b.character_id === character_id ? { ...b, ...updates } : b
+    ));
+  }
+  
+  async function generateMultiCharacterLipSync() {
+    if (!multiLipSyncImageId) {
+      alert('Select an image first');
+      return;
+    }
+    if (multiLipSyncBoundingBoxes.length === 0) {
+      alert('Add at least one character bounding box');
+      return;
+    }
+    
+    const unassignedBoxes = multiLipSyncBoundingBoxes.filter(b => !b.audio_track_id);
+    if (unassignedBoxes.length > 0) {
+      alert(`Assign audio to all characters. Missing: ${unassignedBoxes.map(b => b.character_name).join(', ')}`);
+      return;
+    }
+    
+    const image = media.find(m => m.id === multiLipSyncImageId);
+    if (!image) {
+      alert('Image not found');
+      return;
+    }
+    
+    const jobId = startJob('Multi-character lip-sync (may take 10-45 min)');
+    console.log('[Multi-Character Lip-Sync] Starting with', multiLipSyncBoundingBoxes.length, 'characters');
+    
+    try {
+      // Build the payload with character-to-audio mappings and bounding boxes
+      const payload = {
+        project_id: projectId,
+        image_path: image.path,
+        characters: multiLipSyncBoundingBoxes.map(box => {
+          const audioItem = media.find(m => m.id === box.audio_track_id);
+          return {
+            character_id: box.character_id,
+            character_name: box.character_name,
+            audio_path: audioItem?.path,
+            bounding_box: {
+              x: box.x,
+              y: box.y,
+              width: box.width,
+              height: box.height
+            }
+          };
+        }),
+        prompt: multiLipSyncPrompt || undefined,
+        filename: multiLipSyncOutputName || undefined
+      };
+      
+      console.log('[Multi-Character Lip-Sync] Payload:', payload);
+      
+      const r = await fetch('http://127.0.0.1:8000/ai/lipsync/multi-character', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      const d = await r.json();
+      console.log('[Multi-Character Lip-Sync] Response:', d);
+      
+      if (d.status === 'ok' && d.job_id) {
+        setIsMultiLipSyncOpen(false);
+        
+        // Poll for completion
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await fetch(`http://127.0.0.1:8000/jobs/${d.job_id}`);
+            const statusData = await statusRes.json();
+            
+            if (statusData.status === 'completed') {
+              clearInterval(pollInterval);
+              await refreshMedia();
+              finishJob(jobId, 'done', 'Multi-character lip-sync complete!');
+            } else if (statusData.status === 'failed') {
+              clearInterval(pollInterval);
+              finishJob(jobId, 'error', statusData.error || 'Failed');
+            } else if (statusData.message) {
+              setJobs(prev => prev.map(j => j.id === jobId ? { ...j, label: statusData.message } : j));
+            }
+          } catch (e) {
+            console.error('Error polling job status:', e);
+          }
+        }, 5000);
+        
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          finishJob(jobId, 'error', 'Job timed out after 45 minutes');
+        }, 2700000); // 45 minutes
+      } else {
+        throw new Error(d.detail || 'Failed to start multi-character lip-sync');
+      }
+    } catch (err: any) {
+      console.error('[Multi-Character Lip-Sync] Error:', err);
+      finishJob(jobId, 'error', err.message);
+      alert(`❌ Multi-character lip-sync failed: ${err.message}`);
+    }
   }
   
   async function generateVoiceForSlot(slotId: string) {
@@ -3422,6 +3576,209 @@ export default function App() {
                       <Dialog.Close asChild>
                         <button className="button">Close</button>
                       </Dialog.Close>
+                    </div>
+                  </Dialog.Content>
+                </Dialog.Portal>
+              </Dialog.Root>
+              
+              {/* Multi-Character Lip-Sync */}
+              <Dialog.Root open={isMultiLipSyncOpen} onOpenChange={setIsMultiLipSyncOpen}>
+                <Dialog.Trigger asChild>
+                  <button className="button">Multi-Character Lip-Sync</button>
+                </Dialog.Trigger>
+                <Dialog.Portal>
+                  <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+                  <Dialog.Content className="fixed inset-4 overflow-y-auto card p-5">
+                    <Dialog.Title className="text-sm font-semibold mb-2">Multi-Character Lip-Sync</Dialog.Title>
+                    <Dialog.Description className="text-xs text-neutral-400 mb-3">
+                      Precisely assign audio tracks to specific characters using bounding boxes
+                    </Dialog.Description>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Left: Image + Bounding Boxes */}
+                      <div>
+                        <div className="text-xs text-neutral-400 mb-2">Reference Image</div>
+                        {multiLipSyncImageId ? (
+                          <div className="relative">
+                            <img 
+                              src={`http://127.0.0.1:8000${media.find(m => m.id === multiLipSyncImageId)?.url}`}
+                              className="w-full rounded border border-neutral-700"
+                            />
+                            <button
+                              className="absolute top-2 right-2 text-xs px-2 py-1 bg-red-500/80 hover:bg-red-500 rounded text-white"
+                              onClick={() => {
+                                setMultiLipSyncImageId(null);
+                                setMultiLipSyncBoundingBoxes([]);
+                              }}
+                            >
+                              Change Image
+                            </button>
+                            {/* Draw bounding boxes */}
+                            {multiLipSyncBoundingBoxes.map((box, idx) => (
+                              <div
+                                key={box.character_id}
+                                className="absolute border-2 border-violet-500"
+                                style={{
+                                  left: `${box.x}%`,
+                                  top: `${box.y}%`,
+                                  width: `${box.width}%`,
+                                  height: `${box.height}%`
+                                }}
+                              >
+                                <div className="absolute -top-5 left-0 text-[10px] bg-violet-500 text-white px-1 rounded">
+                                  {box.character_name}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="border-2 border-dashed border-neutral-700 rounded h-96 flex items-center justify-center">
+                            <div className="text-center">
+                              <div className="text-xs text-neutral-500 mb-3">Select an image</div>
+                              <div className="max-h-64 overflow-y-auto grid grid-cols-3 gap-2 p-2">
+                                {imageMedia.slice(0, 30).map(img => (
+                                  <button
+                                    key={img.id}
+                                    onClick={() => setMultiLipSyncImageId(img.id)}
+                                    className="relative group"
+                                  >
+                                    <img 
+                                      src={`http://127.0.0.1:8000${img.url}`}
+                                      className="w-full h-20 object-cover rounded border border-neutral-700 hover:border-violet-500"
+                                    />
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Right: Character Assignments */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="text-xs text-neutral-400">Character Assignments</div>
+                          <button
+                            className="button-primary text-xs px-2 py-1"
+                            onClick={addCharacterBoundingBox}
+                            disabled={!selectedCharacterId || !multiLipSyncImageId}
+                          >
+                            + Add Character
+                          </button>
+                        </div>
+                        
+                        {multiLipSyncBoundingBoxes.length === 0 ? (
+                          <div className="text-xs text-neutral-500 text-center py-8 border border-dashed border-neutral-700 rounded">
+                            Select a character and click "+ Add Character"
+                          </div>
+                        ) : (
+                          <div className="space-y-3 max-h-[500px] overflow-y-auto">
+                            {multiLipSyncBoundingBoxes.map((box) => {
+                              const assignedAudio = box.audio_track_id ? media.find(m => m.id === box.audio_track_id) : null;
+                              return (
+                                <div key={box.character_id} className="border border-neutral-700 rounded p-3 bg-neutral-900/30">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <div className="text-xs font-semibold text-violet-400">{box.character_name}</div>
+                                    <button
+                                      className="text-xs text-red-400 hover:text-red-300"
+                                      onClick={() => removeCharacterBoundingBox(box.character_id)}
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                  
+                                  <div className="space-y-2">
+                                    <div className="text-[10px] text-neutral-500 mb-1">Bounding Box (% of image)</div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <input
+                                        className="field text-[10px]"
+                                        type="number"
+                                        placeholder="X %"
+                                        value={box.x}
+                                        onChange={(e) => updateCharacterBoundingBox(box.character_id, { x: parseFloat(e.target.value) || 0 })}
+                                      />
+                                      <input
+                                        className="field text-[10px]"
+                                        type="number"
+                                        placeholder="Y %"
+                                        value={box.y}
+                                        onChange={(e) => updateCharacterBoundingBox(box.character_id, { y: parseFloat(e.target.value) || 0 })}
+                                      />
+                                      <input
+                                        className="field text-[10px]"
+                                        type="number"
+                                        placeholder="Width %"
+                                        value={box.width}
+                                        onChange={(e) => updateCharacterBoundingBox(box.character_id, { width: parseFloat(e.target.value) || 0 })}
+                                      />
+                                      <input
+                                        className="field text-[10px]"
+                                        type="number"
+                                        placeholder="Height %"
+                                        value={box.height}
+                                        onChange={(e) => updateCharacterBoundingBox(box.character_id, { height: parseFloat(e.target.value) || 0 })}
+                                      />
+                                    </div>
+                                    
+                                    <div className="text-[10px] text-neutral-500 mb-1">Audio Track</div>
+                                    <select
+                                      className="field text-xs"
+                                      value={box.audio_track_id || ''}
+                                      onChange={(e) => updateCharacterBoundingBox(box.character_id, { audio_track_id: e.target.value || null })}
+                                    >
+                                      <option value="">Select audio...</option>
+                                      {audioMedia.map(a => (
+                                        <option key={a.id} value={a.id}>{a.id}</option>
+                                      ))}
+                                    </select>
+                                    
+                                    {assignedAudio && (
+                                      <div className="bg-neutral-800/50 rounded p-1">
+                                        <audio controls className="w-full h-6">
+                                          <source src={`http://127.0.0.1:8000${assignedAudio.url}`} />
+                                        </audio>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        
+                        <div className="space-y-2 pt-3 border-t border-neutral-700">
+                          <input
+                            className="field text-xs"
+                            placeholder="Prompt (optional)"
+                            value={multiLipSyncPrompt}
+                            onChange={(e) => setMultiLipSyncPrompt(e.target.value)}
+                          />
+                          <input
+                            className="field text-xs"
+                            placeholder="Output filename"
+                            value={multiLipSyncOutputName}
+                            onChange={(e) => setMultiLipSyncOutputName(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="mt-4 flex justify-between items-center">
+                      <div className="text-[10px] text-neutral-500">
+                        {multiLipSyncBoundingBoxes.length} character(s) • {multiLipSyncBoundingBoxes.filter(b => b.audio_track_id).length} assigned
+                      </div>
+                      <div className="flex gap-2">
+                        <Dialog.Close asChild>
+                          <button className="button">Cancel</button>
+                        </Dialog.Close>
+                        <button
+                          className="button-primary"
+                          onClick={generateMultiCharacterLipSync}
+                          disabled={!multiLipSyncImageId || multiLipSyncBoundingBoxes.length === 0 || multiLipSyncBoundingBoxes.some(b => !b.audio_track_id)}
+                        >
+                          Generate Multi-Character Lip-Sync
+                        </button>
+                      </div>
                     </div>
                   </Dialog.Content>
                 </Dialog.Portal>
