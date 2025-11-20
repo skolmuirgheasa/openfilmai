@@ -1273,8 +1273,17 @@ def api_scan_media(project_id: str):
     audio_dir.mkdir(parents=True, exist_ok=True)
     images_dir.mkdir(parents=True, exist_ok=True)
 
+    # First, deduplicate existing items
     existing = read_metadata(project_id).get("media", [])
-    existing_ids = set(item.get("id") for item in existing)
+    seen_ids = set()
+    unique_existing = []
+    for item in existing:
+        mid = item.get("id")
+        if mid not in seen_ids:
+            seen_ids.add(mid)
+            unique_existing.append(item)
+    existing = unique_existing
+    existing_ids = seen_ids
 
     new_items = []
 
