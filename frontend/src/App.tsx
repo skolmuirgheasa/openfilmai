@@ -30,6 +30,7 @@ export default function App() {
   const [seedreamAspectRatio, setSeedreamAspectRatio] = useState<string>('16:9');
   const [seedreamNumOutputs, setSeedreamNumOutputs] = useState<number>(1);
   const [videoAspectRatio, setVideoAspectRatio] = useState<string>('16:9');
+  const [videoDuration, setVideoDuration] = useState<number>(8); // seconds
   const [replicateRefImages, setReplicateRefImages] = useState<string[]>([]);
   const [isVoiceOpen, setIsVoiceOpen] = useState<boolean>(false);
   const [voiceText, setVoiceText] = useState<string>('');
@@ -2261,7 +2262,19 @@ export default function App() {
                     )}
                     {genMediaType === 'video' && (
                       <>
-                        <div className="grid grid-cols-2 gap-3 mb-3">
+                        <div className="grid grid-cols-3 gap-3 mb-3">
+                          <div>
+                            <label className="block text-xs text-neutral-400 mb-1">Duration (seconds)</label>
+                            <input
+                              type="number"
+                              className="field"
+                              min="2"
+                              max={replicateModel === 'bytedance/seedance-1-pro' ? 12 : 10}
+                              value={videoDuration}
+                              onChange={(e) => setVideoDuration(parseInt(e.target.value) || 8)}
+                              title={replicateModel === 'bytedance/seedance-1-pro' ? 'Seedance: 2-12 seconds' : '2-10 seconds'}
+                            />
+                          </div>
                           <div>
                             <label className="block text-xs text-neutral-400 mb-1">Aspect Ratio</label>
                             <select className="field" value={videoAspectRatio} onChange={(e) => setVideoAspectRatio(e.target.value)}>
@@ -2779,7 +2792,7 @@ export default function App() {
                               provider,
                               media_type: genMediaType,
                               model: provider === 'replicate' ? replicateModel : 'veo-3.1-fast-generate-preview',
-                              duration: genMediaType === 'video' ? 8 : undefined,
+                              duration: genMediaType === 'video' ? videoDuration : undefined,
                               resolution: genMediaType === 'video' ? '1080p' : undefined,
                               aspect_ratio: genMediaType === 'image' ? seedreamAspectRatio : videoAspectRatio,
                               // For video generation, send start_frame_path and end_frame_path for all providers
