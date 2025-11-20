@@ -139,6 +139,37 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/storage/show-in-finder")
+def show_in_finder(req: dict):
+    """Open the file's location in Finder (macOS)"""
+    import subprocess
+    import platform
+    
+    try:
+        rel_path = req.get("path", "")
+        if not rel_path:
+            return {"status": "error", "detail": "No path provided"}
+        
+        # Convert relative path to absolute
+        abs_path = Path.cwd() / rel_path
+        if not abs_path.exists():
+            return {"status": "error", "detail": f"File not found: {abs_path}"}
+        
+        # Open in Finder (macOS) or File Explorer (Windows) or file manager (Linux)
+        system = platform.system()
+        if system == "Darwin":  # macOS
+            subprocess.run(["open", "-R", str(abs_path)])
+        elif system == "Windows":
+            subprocess.run(["explorer", "/select,", str(abs_path)])
+        else:  # Linux
+            # Open the parent directory
+            subprocess.run(["xdg-open", str(abs_path.parent)])
+        
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 # Job queue helpers
 def create_job(job_type: str, **kwargs) -> str:
     """Create a new background job and return its ID"""
@@ -427,6 +458,7 @@ class VoiceTTSRequest(BaseModel):
     voice_id: Optional[str] = None
     model_id: Optional[str] = None
     filename: Optional[str] = None
+    voice_settings: Optional[dict] = None
 
 
 @app.post("/ai/voice/tts")
@@ -437,7 +469,7 @@ def voice_tts(req: VoiceTTSRequest):
         return {"status": "error", "detail": "ElevenLabs API key not set in Settings"}
     prov = ElevenLabsProvider(api_key=key)
     try:
-        out = prov.generate(text=req.text, voice_id=req.voice_id, model_id=req.model_id or None, output_format="mp3")
+        out = prov.generate(text=req.text, voice_id=req.voice_id, model_id=req.model_id or None, output_format="mp3", voice_settings=req.voice_settings)
         # Save to project audio folder and index
         proj_audio = ensure_scene_dirs(req.project_id, "tmp")["audio"].parent.parent / "media" / "audio"
         proj_audio.mkdir(parents=True, exist_ok=True)
@@ -446,9 +478,9 @@ def voice_tts(req: VoiceTTSRequest):
         target = proj_audio / filename
         Path(out).rename(target)
         rel = str(target.relative_to(PROJECT_DATA_DIR))
-        item = {"id": target.name, "type": "audio", "path": f"project_data/{rel}", "url": f"/files/{rel}"}
+        item = {"id": target.name, "type": "audio", "path": f"project_data/{rel}", "url": f"/files/{rel}", "filename": target.name}
         add_media(req.project_id, item)
-        return {"status": "ok", "file_url": f"/files/{rel}", "item": item}
+        return {"status": "ok", "file_url": f"/files/{rel}", "item": item, "filename": target.name}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
@@ -459,6 +491,8 @@ class VoiceV2VRequest(BaseModel):
     voice_id: Optional[str] = None
     model_id: Optional[str] = "eleven_multilingual_sts_v2"
     filename: Optional[str] = None
+    voice_settings: Optional[dict] = None
+    remove_background_noise: Optional[bool] = False
 
 
 @app.post("/ai/voice/v2v")
@@ -472,16 +506,16 @@ def voice_v2v(req: VoiceV2VRequest):
         src = Path(req.source_wav)
         if not src.is_absolute():
             src = Path.cwd() / req.source_wav
-        out = prov.speech_to_speech(audio_path=str(src), voice_id=req.voice_id or None, model_id=req.model_id or "eleven_multilingual_sts_v2", output_format="mp3")
+        out = prov.speech_to_speech(audio_path=str(src), voice_id=req.voice_id or None, model_id=req.model_id or "eleven_multilingual_sts_v2", output_format="mp3", voice_settings=req.voice_settings, remove_background_noise=req.remove_background_noise or False)
         proj_audio = ensure_scene_dirs(req.project_id, "tmp")["audio"].parent.parent / "media" / "audio"
         proj_audio.mkdir(parents=True, exist_ok=True)
         stub = f"voice_v2v_{int(__import__('time').time())}"
         target = proj_audio / _safe_filename(req.filename, stub, ".mp3")
         Path(out).rename(target)
         rel = str(target.relative_to(PROJECT_DATA_DIR))
-        item = {"id": target.name, "type": "audio", "path": f"project_data/{rel}", "url": f"/files/{rel}"}
+        item = {"id": target.name, "type": "audio", "path": f"project_data/{rel}", "url": f"/files/{rel}", "filename": target.name}
         add_media(req.project_id, item)
-        return {"status": "ok", "file_url": f"/files/{rel}", "item": item}
+        return {"status": "ok", "file_url": f"/files/{rel}", "item": item, "filename": target.name}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 

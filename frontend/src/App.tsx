@@ -42,7 +42,47 @@ export default function App() {
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
   const [recordedMediaPath, setRecordedMediaPath] = useState<string | null>(null);
   const [voiceOutputName, setVoiceOutputName] = useState<string>('');
+  const [voiceStability, setVoiceStability] = useState<number>(() => {
+    const saved = localStorage.getItem('voiceStability');
+    return saved ? parseFloat(saved) : 0.5;
+  });
+  const [voiceSimilarity, setVoiceSimilarity] = useState<number>(() => {
+    const saved = localStorage.getItem('voiceSimilarity');
+    return saved ? parseFloat(saved) : 0.75;
+  });
+  const [voiceStyle, setVoiceStyle] = useState<number>(() => {
+    const saved = localStorage.getItem('voiceStyle');
+    return saved ? parseFloat(saved) : 0.0;
+  });
+  const [voiceSpeakerBoost, setVoiceSpeakerBoost] = useState<boolean>(() => {
+    const saved = localStorage.getItem('voiceSpeakerBoost');
+    return saved ? saved === 'true' : true;
+  });
+  const [voiceRemoveNoise, setVoiceRemoveNoise] = useState<boolean>(() => {
+    const saved = localStorage.getItem('voiceRemoveNoise');
+    return saved ? saved === 'true' : false;
+  });
   const [isLipOpen, setIsLipOpen] = useState<boolean>(false);
+  
+  // Voice Scene Builder state
+  type VoiceSceneSlot = {
+    id: string;
+    visualId: string | null; // media ID for image or video
+    visualType: 'image' | 'video' | null;
+    dialogueText: string;
+    characterId: string | null;
+    voiceId: string;
+    recordedAudioPath: string | null;
+    selectedAudioId: string | null;
+    generatedVoiceId: string | null; // media ID after TTS/V2V
+    generatedLipSyncId: string | null; // media ID after lip-sync
+    lipSyncPrompt: string;
+  };
+  const [isVoiceSceneOpen, setIsVoiceSceneOpen] = useState<boolean>(false);
+  const [voiceSceneSlots, setVoiceSceneSlots] = useState<VoiceSceneSlot[]>([]);
+  const [voiceSceneName, setVoiceSceneName] = useState<string>('Untitled Voice Scene');
+  const [voiceSceneRecordingSlotId, setVoiceSceneRecordingSlotId] = useState<string | null>(null);
+  const voiceSceneRecorderRef = useRef<MediaRecorder | null>(null);
   const [lipMode, setLipMode] = useState<'video' | 'image'>('video');
   const [lipVideoId, setLipVideoId] = useState<string | null>(null);
   const [lipImageId, setLipImageId] = useState<string | null>(null);
@@ -130,6 +170,37 @@ export default function App() {
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(new Set());
   const [showArchived, setShowArchived] = useState<boolean>(false);
   const [archivedMedia, setArchivedMedia] = useState<any[]>([]);
+  
+  // Auto-update voiceId when voiceCharacterId changes
+  useEffect(() => {
+    if (voiceCharacterId) {
+      const char = characters.find((c) => c.character_id === voiceCharacterId);
+      if (char?.voice_id) {
+        setVoiceId(char.voice_id);
+      }
+    }
+  }, [voiceCharacterId, characters]);
+  
+  // Persist voice settings to localStorage
+  useEffect(() => {
+    localStorage.setItem('voiceStability', voiceStability.toString());
+  }, [voiceStability]);
+  
+  useEffect(() => {
+    localStorage.setItem('voiceSimilarity', voiceSimilarity.toString());
+  }, [voiceSimilarity]);
+  
+  useEffect(() => {
+    localStorage.setItem('voiceStyle', voiceStyle.toString());
+  }, [voiceStyle]);
+  
+  useEffect(() => {
+    localStorage.setItem('voiceSpeakerBoost', voiceSpeakerBoost.toString());
+  }, [voiceSpeakerBoost]);
+  
+  useEffect(() => {
+    localStorage.setItem('voiceRemoveNoise', voiceRemoveNoise.toString());
+  }, [voiceRemoveNoise]);
   
   function ProjectPicker({ projectId, onSwitch }: { projectId: string; onSwitch: (pid: string) => void }) {
     const [projects, setProjects] = useState<string[]>([]);
@@ -325,6 +396,280 @@ export default function App() {
     setMedia(sorted);
   }
 
+  async function showInFinder(mediaItem: any) {
+    try {
+      // Convert relative path to absolute path
+      // mediaItem.path is like "project_data/vampyre/media/video/file.mp4"
+      const response = await fetch(`http://127.0.0.1:8000/storage/show-in-finder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: mediaItem.path })
+      });
+      const data = await response.json();
+      if (data.status !== 'ok') {
+        alert(`Failed to show in Finder: ${data.detail}`);
+      }
+    } catch (err: any) {
+      console.error('Show in Finder error:', err);
+      alert(`Failed to show in Finder: ${err.message}`);
+    }
+  }
+  
+  function addVoiceSceneSlot() {
+    const newSlot: VoiceSceneSlot = {
+      id: `slot_${Date.now()}`,
+      visualId: null,
+      visualType: null,
+      dialogueText: '',
+      characterId: null,
+      voiceId: '',
+      recordedAudioPath: null,
+      selectedAudioId: null,
+      generatedVoiceId: null,
+      generatedLipSyncId: null,
+      lipSyncPrompt: ''
+    };
+    setVoiceSceneSlots([...voiceSceneSlots, newSlot]);
+  }
+  
+  function removeVoiceSceneSlot(slotId: string) {
+    setVoiceSceneSlots(voiceSceneSlots.filter(s => s.id !== slotId));
+  }
+  
+  function updateVoiceSceneSlot(slotId: string, updates: Partial<VoiceSceneSlot>) {
+    setVoiceSceneSlots(voiceSceneSlots.map(s => s.id === slotId ? { ...s, ...updates } : s));
+  }
+  
+  async function startVoiceSceneRecording(slotId: string) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('file', blob, `voice_scene_${slotId}_${Date.now()}.webm`);
+        formData.append('project_id', projectId);
+        
+        console.log('[Voice Scene Recording] Uploading recorded audio for slot:', slotId);
+        const r = await fetch('http://127.0.0.1:8000/storage/' + projectId + '/media', {
+          method: 'POST',
+          body: formData
+        });
+        const d = await r.json();
+        console.log('[Voice Scene Recording] Upload response:', d);
+        
+        if (d.status === 'ok' && d.item) {
+          await refreshMedia();
+          // Update slot with new recording, replacing any previous selection
+          updateVoiceSceneSlot(slotId, { 
+            recordedAudioPath: d.item.path, 
+            selectedAudioId: d.item.id,
+            generatedVoiceId: null // Clear generated voice since we have new source audio
+          });
+          console.log('[Voice Scene Recording] Slot updated with new audio:', d.item.id);
+        }
+        stream.getTracks().forEach(t => t.stop());
+      };
+      
+      recorder.start();
+      voiceSceneRecorderRef.current = recorder;
+      setVoiceSceneRecordingSlotId(slotId);
+      console.log('[Voice Scene Recording] Started recording for slot:', slotId);
+    } catch (err: any) {
+      console.error('[Voice Scene Recording] Error:', err);
+      alert('Failed to start recording: ' + err.message);
+    }
+  }
+  
+  function stopVoiceSceneRecording() {
+    if (voiceSceneRecorderRef.current) {
+      console.log('[Voice Scene Recording] Stopping recording');
+      voiceSceneRecorderRef.current.stop();
+      voiceSceneRecorderRef.current = null;
+    }
+    setVoiceSceneRecordingSlotId(null);
+  }
+  
+  async function generateVoiceForSlot(slotId: string) {
+    const slot = voiceSceneSlots.find(s => s.id === slotId);
+    if (!slot) return;
+    
+    const char = slot.characterId ? characters.find(c => c.character_id === slot.characterId) : null;
+    const resolvedVoiceId = slot.voiceId || char?.voice_id || undefined;
+    
+    const voiceSettings = {
+      stability: voiceStability,
+      similarity_boost: voiceSimilarity,
+      style: voiceStyle,
+      use_speaker_boost: voiceSpeakerBoost
+    };
+    
+    const jobId = startJob(`Generating voice for slot #${voiceSceneSlots.indexOf(slot) + 1}`);
+    console.log('[Voice Scene] Generating voice for slot:', slotId);
+    
+    try {
+      if (slot.dialogueText.trim()) {
+        // TTS mode
+        const payload = {
+          project_id: projectId,
+          text: slot.dialogueText,
+          voice_id: resolvedVoiceId,
+          filename: `${voiceSceneName}_slot${voiceSceneSlots.indexOf(slot) + 1}`,
+          voice_settings: voiceSettings
+        };
+        console.log('[Voice Scene TTS] Payload:', payload);
+        const r = await fetch('http://127.0.0.1:8000/ai/voice/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const d = await r.json();
+        console.log('[Voice Scene TTS] Response:', d);
+        if (d.status !== 'ok') throw new Error(d.detail || 'TTS failed');
+        
+        await refreshMedia();
+        const newMedia = media.find(m => m.id === d.item.id);
+        if (newMedia) {
+          updateVoiceSceneSlot(slotId, { generatedVoiceId: newMedia.id });
+        }
+        finishJob(jobId, 'done');
+        alert(`✅ Voice generated: ${d.item.id}`);
+      } else if (slot.recordedAudioPath || slot.selectedAudioId) {
+        // V2V mode
+        const audioPath = slot.recordedAudioPath || (slot.selectedAudioId ? media.find(m => m.id === slot.selectedAudioId)?.path : undefined);
+        if (!audioPath) throw new Error('No audio source');
+        
+        const payload = {
+          project_id: projectId,
+          source_wav: audioPath,
+          voice_id: resolvedVoiceId,
+          filename: `${voiceSceneName}_slot${voiceSceneSlots.indexOf(slot) + 1}`,
+          voice_settings: voiceSettings,
+          remove_background_noise: voiceRemoveNoise
+        };
+        console.log('[Voice Scene V2V] Payload:', payload);
+        const r = await fetch('http://127.0.0.1:8000/ai/voice/v2v', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const d = await r.json();
+        console.log('[Voice Scene V2V] Response:', d);
+        if (d.status !== 'ok') throw new Error(d.detail || 'V2V failed');
+        
+        await refreshMedia();
+        const newMedia = media.find(m => m.id === d.item.id);
+        if (newMedia) {
+          updateVoiceSceneSlot(slotId, { generatedVoiceId: newMedia.id });
+        }
+        finishJob(jobId, 'done');
+        alert(`✅ Voice converted: ${d.item.id}`);
+      } else {
+        throw new Error('No dialogue text or audio source');
+      }
+    } catch (err: any) {
+      console.error('[Voice Scene] Voice generation error:', err);
+      finishJob(jobId, 'error', err.message);
+      alert(`❌ Voice generation failed: ${err.message}`);
+    }
+  }
+  
+  async function generateLipSyncForSlot(slotId: string) {
+    const slot = voiceSceneSlots.find(s => s.id === slotId);
+    if (!slot) return;
+    
+    if (!slot.visualId) {
+      alert('Select an image or video first');
+      return;
+    }
+    
+    // Check for ANY audio source (generated, selected, or recorded)
+    const audioId = slot.generatedVoiceId || slot.selectedAudioId;
+    if (!audioId) {
+      alert('Generate voice or select audio first');
+      return;
+    }
+    
+    const visual = media.find(m => m.id === slot.visualId);
+    const audio = media.find(m => m.id === audioId);
+    if (!visual || !audio) {
+      alert('Visual or audio not found in media library');
+      return;
+    }
+    
+    const slotIndex = voiceSceneSlots.indexOf(slot) + 1;
+    const jobId = startJob(`Lip-sync slot #${slotIndex} (may take 5-30 min)`);
+    console.log('[Voice Scene Lip-Sync] Starting for slot:', slotId, 'Visual:', visual.id, 'Audio:', audio.id);
+    
+    try {
+      const endpoint = slot.visualType === 'video' ? '/ai/lipsync/video' : '/ai/lipsync/image';
+      const payload = slot.visualType === 'video'
+        ? {
+            project_id: projectId,
+            video_path: visual.path,
+            audio_wav_path: audio.path,
+            prompt: slot.lipSyncPrompt || undefined,
+            filename: `${voiceSceneName}_slot${slotIndex}_lipsync`
+          }
+        : {
+            project_id: projectId,
+            image_path: visual.path,
+            audio_wav_path: audio.path,
+            prompt: slot.lipSyncPrompt || undefined,
+            filename: `${voiceSceneName}_slot${slotIndex}_lipsync`
+          };
+      
+      console.log('[Voice Scene Lip-Sync] Payload:', payload);
+      const r = await fetch(`http://127.0.0.1:8000${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json();
+      console.log('[Voice Scene Lip-Sync] Response:', d);
+      
+      if (d.status === 'ok' && d.job_id) {
+        // Poll for job completion
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await fetch(`http://127.0.0.1:8000/jobs/${d.job_id}`);
+            const statusData = await statusRes.json();
+            
+            if (statusData.status === 'completed') {
+              clearInterval(pollInterval);
+              await refreshMedia();
+              if (statusData.result?.item?.id) {
+                updateVoiceSceneSlot(slotId, { generatedLipSyncId: statusData.result.item.id });
+              }
+              finishJob(jobId, 'done', 'Lip-sync complete!');
+            } else if (statusData.status === 'failed') {
+              clearInterval(pollInterval);
+              finishJob(jobId, 'error', statusData.error || 'Lip-sync failed');
+            } else if (statusData.message) {
+              setJobs(prev => prev.map(j => j.id === jobId ? { ...j, label: statusData.message } : j));
+            }
+          } catch (e) {
+            console.error('Error polling job status:', e);
+          }
+        }, 5000);
+        
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          finishJob(jobId, 'error', 'Job timed out after 30 minutes');
+        }, 1800000);
+      } else {
+        throw new Error(d.detail || 'Failed to start lip-sync job');
+      }
+    } catch (err: any) {
+      console.error('[Voice Scene Lip-Sync] Error:', err);
+      finishJob(jobId, 'error', err.message);
+      alert(`❌ Lip-sync failed: ${err.message}`);
+    }
+  }
+
   async function refreshCharacters() {
     const data = await fetch(`http://127.0.0.1:8000/storage/${projectId}/characters`).then((r) => r.json());
     const list = data.characters ?? [];
@@ -489,6 +834,15 @@ export default function App() {
       : selectedCharacter;
     const resolvedVoiceId = voiceId || char?.voice_id || undefined;
     const jobId = startJob(voiceMode === 'tts' ? 'Generating voice (TTS)' : 'Generating voice (V2V)');
+    console.log('[Voice Generate] Mode:', voiceMode, 'Character:', char?.name, 'Voice ID:', resolvedVoiceId);
+    
+    const voiceSettings = {
+      stability: voiceStability,
+      similarity_boost: voiceSimilarity,
+      style: voiceStyle,
+      use_speaker_boost: voiceSpeakerBoost
+    };
+    
     try {
       if (voiceMode === 'tts') {
         if (!voiceText.trim()) {
@@ -496,15 +850,25 @@ export default function App() {
           alert('Enter text for TTS.');
           return;
         }
+        const payload = { 
+          project_id: projectId, 
+          text: voiceText, 
+          voice_id: resolvedVoiceId, 
+          filename: voiceOutputName || undefined,
+          voice_settings: voiceSettings
+        };
+        console.log('[Voice TTS] Payload:', payload);
         const r = await fetch('http://127.0.0.1:8000/ai/voice/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ project_id: projectId, text: voiceText, voice_id: resolvedVoiceId, filename: voiceOutputName || undefined })
+          body: JSON.stringify(payload)
         });
         const d = await r.json();
+        console.log('[Voice TTS] Response:', d);
         if (d.status !== 'ok') {
           throw new Error(d.detail || 'Voice generation failed');
         }
+        alert(`✅ Voice generated: ${d.filename || 'voice.mp3'}`);
       } else {
         const audioPath =
           recordedMediaPath ||
@@ -514,20 +878,26 @@ export default function App() {
           alert('Select or record audio for voice-to-voice.');
           return;
         }
+        const payload = {
+          project_id: projectId,
+          source_wav: audioPath,
+          voice_id: resolvedVoiceId,
+          filename: voiceOutputName || undefined,
+          voice_settings: voiceSettings,
+          remove_background_noise: voiceRemoveNoise
+        };
+        console.log('[Voice V2V] Payload:', payload);
         const r = await fetch('http://127.0.0.1:8000/ai/voice/v2v', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            project_id: projectId,
-            source_wav: audioPath,
-            voice_id: resolvedVoiceId,
-            filename: voiceOutputName || undefined
-          })
+          body: JSON.stringify(payload)
         });
         const d = await r.json();
+        console.log('[Voice V2V] Response:', d);
         if (d.status !== 'ok') {
           throw new Error(d.detail || 'Voice conversion failed');
         }
+        alert(`✅ Voice converted: ${d.filename || 'voice.mp3'}`);
       }
       // Save TTS text to history
       if (voiceMode === 'tts' && voiceText.trim()) {
@@ -545,9 +915,9 @@ export default function App() {
       setRecordedMediaPath(null);
       finishJob(jobId, 'done');
     } catch (err: any) {
-      console.error(err);
+      console.error('[Voice Generate] Error:', err);
+      alert(`❌ Voice generation failed: ${err?.message || 'Unknown error'}`);
       finishJob(jobId, 'error', err?.message || 'Voice generation error');
-      alert(err?.message || 'Voice generation error');
     }
   }
 
@@ -1324,13 +1694,23 @@ export default function App() {
                     className="w-3 h-3"
                   />
                   <button
-                    className="flex-1 text-left inline-flex items-center gap-2 hover:underline"
+                    className="text-left inline-flex items-center gap-1 hover:text-violet-400"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      showInFinder(m);
+                    }}
+                    title="Show in Finder"
+                  >
+                    <FolderOpen className="w-3 h-3" />
+                  </button>
+                  <button
+                    className="flex-1 text-left hover:underline"
                     onClick={() => {
                       setSelectedMediaId(m.id);
                       selectMediaForPlayback(m);
                     }}
                   >
-                    <FolderOpen className="w-3 h-3" /> {m.id}
+                    {m.id}
                   </button>
                 </div>
               ))
@@ -1457,13 +1837,23 @@ export default function App() {
                           className="w-3 h-3"
                         />
                         <button
-                          className="flex-1 text-left inline-flex items-center gap-2 hover:underline"
+                          className="text-left inline-flex items-center gap-1 hover:text-violet-400"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            showInFinder(m);
+                          }}
+                          title="Show in Finder"
+                        >
+                          <FolderOpen className="w-3 h-3" />
+                        </button>
+                        <button
+                          className="flex-1 text-left hover:underline"
                           onClick={() => {
                             setSelectedMediaId(m.id);
                             selectMediaForPlayback(m);
                           }}
                         >
-                          <FolderOpen className="w-3 h-3" /> {m.id}
+                          {m.id}
                         </button>
                       </div>
                     ))
@@ -2347,7 +2737,7 @@ export default function App() {
                 </Dialog.Trigger>
                 <Dialog.Portal>
                   <Dialog.Overlay className="fixed inset-0 bg-black/60" />
-                  <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] card p-5">
+                  <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] max-h-[90vh] overflow-y-auto card p-5">
                     <Dialog.Title className="text-sm font-semibold mb-2">Generate Voice</Dialog.Title>
                     <Dialog.Description className="text-xs text-neutral-400 mb-3">
                       Create TTS or voice-to-voice clips. Select a character to auto-fill voice IDs.
@@ -2450,6 +2840,81 @@ export default function App() {
                   )}
                   <label className="block text-xs text-neutral-400 mt-3 mb-1">Output name</label>
                   <input className="field" placeholder="e.g., Ruthven line 1" value={voiceOutputName} onChange={(e) => setVoiceOutputName(e.target.value)} />
+                  
+                  <div className="mt-4 border-t border-neutral-700 pt-3">
+                    <div className="text-xs font-semibold text-neutral-300 mb-2">Voice Settings</div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-neutral-400 mb-1">
+                          Stability: {voiceStability.toFixed(2)}
+                        </label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={voiceStability}
+                          onChange={(e) => setVoiceStability(parseFloat(e.target.value))}
+                          className="w-full"
+                        />
+                        <div className="text-[10px] text-neutral-500">Higher = more consistent</div>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-neutral-400 mb-1">
+                          Similarity: {voiceSimilarity.toFixed(2)}
+                        </label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={voiceSimilarity}
+                          onChange={(e) => setVoiceSimilarity(parseFloat(e.target.value))}
+                          className="w-full"
+                        />
+                        <div className="text-[10px] text-neutral-500">Higher = closer to original</div>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-neutral-400 mb-1">
+                          Style: {voiceStyle.toFixed(2)}
+                        </label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                          value={voiceStyle}
+                          onChange={(e) => setVoiceStyle(parseFloat(e.target.value))}
+                          className="w-full"
+                        />
+                        <div className="text-[10px] text-neutral-500">Higher = more expressive</div>
+                      </div>
+                      <div>
+                        <label className="inline-flex items-center gap-2 text-xs text-neutral-400 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={voiceSpeakerBoost}
+                            onChange={(e) => setVoiceSpeakerBoost(e.target.checked)}
+                          />
+                          Speaker Boost
+                        </label>
+                        <div className="text-[10px] text-neutral-500 mt-1">Enhance similarity (slower)</div>
+                      </div>
+                    </div>
+                    {voiceMode === 'v2v' && (
+                      <div className="mt-2">
+                        <label className="inline-flex items-center gap-2 text-xs text-neutral-400 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={voiceRemoveNoise}
+                            onChange={(e) => setVoiceRemoveNoise(e.target.checked)}
+                          />
+                          Remove Background Noise
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                  
                     <div className="mt-4 flex justify-end gap-2">
                       <Dialog.Close asChild><button className="button">Cancel</button></Dialog.Close>
                     <button className="button-primary" onClick={handleVoiceGenerate}>
@@ -2681,6 +3146,287 @@ export default function App() {
                   </Dialog.Content>
                 </Dialog.Portal>
               </Dialog.Root>
+              
+              {/* Voice Scene Builder */}
+              <Dialog.Root open={isVoiceSceneOpen} onOpenChange={(open) => {
+                setIsVoiceSceneOpen(open);
+                if (!open && voiceSceneRecorderRef.current) {
+                  stopVoiceSceneRecording();
+                }
+              }}>
+                <Dialog.Trigger asChild>
+                  <button className="button">Voice Scene Builder</button>
+                </Dialog.Trigger>
+                <Dialog.Portal>
+                  <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+                  <Dialog.Content className="fixed inset-4 overflow-y-auto card p-5">
+                    <Dialog.Title className="text-sm font-semibold mb-2">Voice Scene Builder</Dialog.Title>
+                    <Dialog.Description className="text-xs text-neutral-400 mb-3">
+                      Build a dialogue scene: visual + voice + lip-sync for each line
+                    </Dialog.Description>
+                    
+                    <div className="flex items-center gap-3 mb-4">
+                      <input
+                        className="field flex-1 text-sm"
+                        placeholder="Scene name"
+                        value={voiceSceneName}
+                        onChange={(e) => setVoiceSceneName(e.target.value)}
+                      />
+                      <button className="button-primary text-sm" onClick={addVoiceSceneSlot}>
+                        + Add Slot
+                      </button>
+                    </div>
+                    
+                    {voiceSceneSlots.length === 0 ? (
+                      <div className="text-xs text-neutral-500 text-center py-8">
+                        No slots yet. Click "+ Add Slot" to start.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {voiceSceneSlots.map((slot, idx) => {
+                          const visual = slot.visualId ? media.find(m => m.id === slot.visualId) : null;
+                          const generatedVoice = slot.generatedVoiceId ? media.find(m => m.id === slot.generatedVoiceId) : null;
+                          const generatedLipSync = slot.generatedLipSyncId ? media.find(m => m.id === slot.generatedLipSyncId) : null;
+                          const selectedAudio = slot.selectedAudioId ? media.find(m => m.id === slot.selectedAudioId) : null;
+                          const isRecording = voiceSceneRecordingSlotId === slot.id;
+                          
+                          return (
+                            <div key={slot.id} className="border border-neutral-700 rounded-lg p-3 bg-neutral-900/30">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="text-xs font-semibold text-neutral-300">#{idx + 1}</div>
+                                <button
+                                  className="text-xs text-red-400 hover:text-red-300"
+                                  onClick={() => removeVoiceSceneSlot(slot.id)}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                              
+                              <div className="grid grid-cols-[200px_1fr_200px] gap-3">
+                                {/* Visual Column */}
+                                <div>
+                                  <div className="text-[10px] uppercase text-neutral-500 mb-1">Visual</div>
+                                  {visual ? (
+                                    <div className="relative group">
+                                      {visual.type === 'image' ? (
+                                        <img src={`http://127.0.0.1:8000${visual.url}`} className="w-full h-28 object-cover rounded border border-neutral-700" />
+                                      ) : (
+                                        <video src={`http://127.0.0.1:8000${visual.url}`} className="w-full h-28 object-cover rounded border border-neutral-700" />
+                                      )}
+                                      <button
+                                        className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs text-white"
+                                        onClick={() => updateVoiceSceneSlot(slot.id, { visualId: null, visualType: null })}
+                                      >
+                                        Change
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div
+                                      className="border-2 border-dashed border-neutral-700 rounded h-28 flex flex-col items-center justify-center text-[10px] text-neutral-500 hover:border-violet-500/50 cursor-pointer"
+                                      onDrop={async (e) => {
+                                        e.preventDefault();
+                                        const files = Array.from(e.dataTransfer.files);
+                                        if (files.length > 0) {
+                                          const formData = new FormData();
+                                          formData.append('file', files[0]);
+                                          formData.append('project_id', projectId);
+                                          const r = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`, {
+                                            method: 'POST',
+                                            body: formData
+                                          });
+                                          const d = await r.json();
+                                          if (d.status === 'ok' && d.item) {
+                                            await refreshMedia();
+                                            updateVoiceSceneSlot(slot.id, { visualId: d.item.id, visualType: d.item.type });
+                                          }
+                                        }
+                                      }}
+                                      onDragOver={(e) => e.preventDefault()}
+                                    >
+                                      <span>Drop file</span>
+                                      <span className="text-[9px] text-neutral-600 mt-1">or select below</span>
+                                    </div>
+                                  )}
+                                  {!visual && (
+                                    <div className="mt-1 max-h-32 overflow-y-auto border border-neutral-800 rounded p-1">
+                                      <div className="grid grid-cols-2 gap-1">
+                                        {[...imageMedia, ...videoMedia].slice(0, 20).map(m => (
+                                          <button
+                                            key={m.id}
+                                            className="relative group"
+                                            onClick={() => updateVoiceSceneSlot(slot.id, { visualId: m.id, visualType: m.type as 'image' | 'video' })}
+                                          >
+                                            {m.type === 'image' ? (
+                                              <img src={`http://127.0.0.1:8000${m.url}`} className="w-full h-12 object-cover rounded border border-neutral-700 hover:border-violet-500" />
+                                            ) : (
+                                              <video src={`http://127.0.0.1:8000${m.url}`} className="w-full h-12 object-cover rounded border border-neutral-700 hover:border-violet-500" />
+                                            )}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                                
+                                {/* Voice Column */}
+                                <div className="space-y-2">
+                                  <div className="text-[10px] uppercase text-neutral-500">Voice Setup</div>
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <select
+                                      className="field text-xs"
+                                      value={slot.characterId || ''}
+                                      onChange={(e) => {
+                                        const charId = e.target.value || null;
+                                        const c = charId ? characters.find(ch => ch.character_id === charId) : null;
+                                        updateVoiceSceneSlot(slot.id, { characterId: charId, voiceId: c?.voice_id || '' });
+                                      }}
+                                    >
+                                      <option value="">Character...</option>
+                                      {characters.map(c => (
+                                        <option key={c.character_id} value={c.character_id}>{c.name}</option>
+                                      ))}
+                                    </select>
+                                    <input
+                                      className="field text-xs"
+                                      placeholder="Voice ID"
+                                      value={slot.voiceId}
+                                      onChange={(e) => updateVoiceSceneSlot(slot.id, { voiceId: e.target.value })}
+                                    />
+                                  </div>
+                                  
+                                  <textarea
+                                    className="field text-xs h-16"
+                                    placeholder="Dialogue text (for TTS)..."
+                                    value={slot.dialogueText}
+                                    onChange={(e) => updateVoiceSceneSlot(slot.id, { dialogueText: e.target.value })}
+                                  />
+                                  
+                                  <div className="flex gap-2">
+                                    <button
+                                      className={`text-[10px] px-2 py-1 rounded ${isRecording ? 'bg-red-500 text-white' : 'bg-neutral-700 hover:bg-neutral-600 text-neutral-300'}`}
+                                      onClick={() => isRecording ? stopVoiceSceneRecording() : startVoiceSceneRecording(slot.id)}
+                                    >
+                                      {isRecording ? '⏹ Stop' : '🎤 Record'}
+                                    </button>
+                                    <div
+                                      className="flex-1 border border-dashed border-neutral-700 rounded px-2 py-1 text-[10px] text-neutral-500 hover:border-violet-500/50 cursor-pointer flex items-center justify-center"
+                                      onDrop={async (e) => {
+                                        e.preventDefault();
+                                        const files = Array.from(e.dataTransfer.files);
+                                        if (files.length > 0) {
+                                          const formData = new FormData();
+                                          formData.append('file', files[0]);
+                                          formData.append('project_id', projectId);
+                                          const r = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`, {
+                                            method: 'POST',
+                                            body: formData
+                                          });
+                                          const d = await r.json();
+                                          if (d.status === 'ok' && d.item) {
+                                            await refreshMedia();
+                                            updateVoiceSceneSlot(slot.id, { selectedAudioId: d.item.id });
+                                          }
+                                        }
+                                      }}
+                                      onDragOver={(e) => e.preventDefault()}
+                                    >
+                                      Drop audio
+                                    </div>
+                                  </div>
+                                  
+                                  <select
+                                    className="field text-[10px]"
+                                    value={slot.selectedAudioId || ''}
+                                    onChange={(e) => updateVoiceSceneSlot(slot.id, { selectedAudioId: e.target.value || null })}
+                                  >
+                                    <option value="">Or select existing audio...</option>
+                                    {audioMedia.map(a => (
+                                      <option key={a.id} value={a.id}>{a.id}</option>
+                                    ))}
+                                  </select>
+                                  
+                                  {selectedAudio && (
+                                    <div className="bg-neutral-800/50 rounded p-1">
+                                      <div className="text-[9px] text-neutral-500 mb-1">Selected: {selectedAudio.id}</div>
+                                      <audio key={selectedAudio.id} controls className="w-full h-6">
+                                        <source src={`http://127.0.0.1:8000${selectedAudio.url}?t=${Date.now()}`} />
+                                      </audio>
+                                    </div>
+                                  )}
+                                  
+                                  <button
+                                    className="button-primary w-full text-xs py-1"
+                                    onClick={() => generateVoiceForSlot(slot.id)}
+                                    disabled={!slot.dialogueText.trim() && !slot.recordedAudioPath && !slot.selectedAudioId}
+                                  >
+                                    Generate Voice
+                                  </button>
+                                  
+                                  {generatedVoice && (
+                                    <div className="bg-green-900/20 border border-green-500/30 rounded p-1">
+                                      <div className="text-[9px] text-green-400 mb-1">✓ Generated: {generatedVoice.id}</div>
+                                      <audio key={generatedVoice.id} controls className="w-full h-6">
+                                        <source src={`http://127.0.0.1:8000${generatedVoice.url}?t=${Date.now()}`} />
+                                      </audio>
+                                    </div>
+                                  )}
+                                </div>
+                                
+                                {/* Lip-Sync Column */}
+                                <div>
+                                  <div className="text-[10px] uppercase text-neutral-500 mb-1">Lip-Sync</div>
+                                  {generatedLipSync ? (
+                                    <div>
+                                      <video
+                                        src={`http://127.0.0.1:8000${generatedLipSync.url}`}
+                                        controls
+                                        className="w-full h-28 rounded border border-green-500/30"
+                                      />
+                                      <div className="text-[10px] text-green-400 mt-1">✓ Complete</div>
+                                    </div>
+                                  ) : (
+                                    <div className="space-y-2">
+                                      <div className="text-[10px] text-neutral-500 bg-neutral-800/50 rounded p-2 h-16 flex flex-col items-center justify-center">
+                                        {!slot.visualId ? (
+                                          <span>⚠ Need visual</span>
+                                        ) : !(slot.generatedVoiceId || slot.selectedAudioId) ? (
+                                          <span>⚠ Need audio</span>
+                                        ) : (
+                                          <span className="text-green-400">✓ Ready</span>
+                                        )}
+                                      </div>
+                                      <input
+                                        className="field text-[10px]"
+                                        placeholder="Prompt (optional)"
+                                        value={slot.lipSyncPrompt}
+                                        onChange={(e) => updateVoiceSceneSlot(slot.id, { lipSyncPrompt: e.target.value })}
+                                      />
+                                      <button
+                                        className="button-primary w-full text-xs py-1"
+                                        onClick={() => generateLipSyncForSlot(slot.id)}
+                                        disabled={!slot.visualId || !(slot.generatedVoiceId || slot.selectedAudioId)}
+                                      >
+                                        Generate
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    
+                    <div className="mt-4 flex justify-end gap-2">
+                      <Dialog.Close asChild>
+                        <button className="button">Close</button>
+                      </Dialog.Close>
+                    </div>
+                  </Dialog.Content>
+                </Dialog.Portal>
+              </Dialog.Root>
+              
               <button
                 className="button"
                 onClick={() => {

@@ -18,7 +18,7 @@ class ElevenLabsProvider(AIProvider):
     SPEECH_TO_SPEECH_URL = "https://api.elevenlabs.io/v1/speech-to-speech"
     DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel
 
-    def generate(self, text: str, voice_id: str = None, output_format: str = "mp3", model_id: str = None, **kwargs) -> str:
+    def generate(self, text: str, voice_id: str = None, output_format: str = "mp3", model_id: str = None, voice_settings: dict = None, **kwargs) -> str:
         if not self.api_key:
             raise AIProviderError("ElevenLabs API key not set")
         if not text or not text.strip():
@@ -37,6 +37,8 @@ class ElevenLabsProvider(AIProvider):
         }
         if model_id:
             body["model_id"] = model_id
+        if voice_settings:
+            body["voice_settings"] = voice_settings
 
         resp = self._make_request("POST", url, headers=headers, json=body, timeout=120)
         ctype = (resp.headers.get("Content-Type") or "").lower()
@@ -46,7 +48,7 @@ class ElevenLabsProvider(AIProvider):
             f.write(resp.content)
         return out_path
 
-    def speech_to_speech(self, audio_path: str, voice_id: str = None, model_id: str = "eleven_multilingual_sts_v2", output_format: str = "mp3") -> str:
+    def speech_to_speech(self, audio_path: str, voice_id: str = None, model_id: str = "eleven_multilingual_sts_v2", output_format: str = "mp3", voice_settings: dict = None, remove_background_noise: bool = False) -> str:
         if not self.api_key:
             raise AIProviderError("ElevenLabs API key not set")
         if not audio_path or not os.path.exists(audio_path):
@@ -63,6 +65,11 @@ class ElevenLabsProvider(AIProvider):
             "model_id": model_id,
             "output_format": output_format,
         }
+        if remove_background_noise:
+            data["remove_background_noise"] = "true"
+        if voice_settings:
+            import json
+            data["voice_settings"] = json.dumps(voice_settings)
 
         with open(audio_path, "rb") as fh:
             files = {
