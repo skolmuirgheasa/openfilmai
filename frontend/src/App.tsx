@@ -322,8 +322,9 @@ export default function App() {
         const cm = await fetch('http://127.0.0.1:8000/settings/custom-models').then((r) => r.json());
         if (!cancelled) setCustomModels(cm.models ?? []);
       } catch (_) {}
-      // Auto-scan media on boot
+      // Auto-scan media on boot and normalize types
       try {
+        await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/normalize-types`, { method: 'POST' });
         await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/scan`, { method: 'POST' });
       } catch (_) {}
       // Load scenes for project
@@ -1623,6 +1624,7 @@ export default function App() {
               <button
                 className="button text-[10px] px-2 py-1"
                 onClick={async () => {
+                  await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/normalize-types`, { method: 'POST' });
                   await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/scan`, { method: 'POST' });
                   await refreshMedia();
                 }}
@@ -1817,7 +1819,16 @@ export default function App() {
             if (sourceFilter !== 'all') {
               filtered = filtered.filter(m => m.source === sourceFilter);
             }
-            // Note: showExtractedFrames toggle is now replaced by source filter
+            // Debug logging
+            if (media.length > 0 && filtered.length === 0 && (mediaFilter !== 'all' || sourceFilter !== 'all')) {
+              console.log('Filter Debug:', {
+                mediaFilter,
+                sourceFilter,
+                totalMedia: media.length,
+                filteredCount: filtered.length,
+                sampleTypes: media.slice(0, 5).map(m => ({ id: m.id, type: m.type, source: m.source }))
+              });
+            }
             
             return filtered.length === 0 ? (
               <div className="text-xs text-neutral-500 p-2">No matching files.</div>

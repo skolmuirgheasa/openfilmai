@@ -1002,8 +1002,21 @@ async def api_upload_media(project_id: str, file: UploadFile = File(...)):
     dirs = media_dirs(project_id)
     filename = file.filename or "upload.bin"
     lower = filename.lower()
-    mtype = "video" if lower.endswith((".mp4", ".mov", ".m4v")) else "audio" if lower.endswith((".wav", ".mp3", ".aac", ".flac")) else "images" if lower.endswith((".png", ".jpg", ".jpeg", ".webp")) else "video"
-    target_dir = dirs[mtype]
+    # Determine type and directory
+    if lower.endswith((".mp4", ".mov", ".m4v")):
+        mtype_dir = "video"
+        mtype = "video"
+    elif lower.endswith((".wav", ".mp3", ".aac", ".flac")):
+        mtype_dir = "audio"
+        mtype = "audio"
+    elif lower.endswith((".png", ".jpg", ".jpeg", ".webp")):
+        mtype_dir = "images"
+        mtype = "image"
+    else:
+        mtype_dir = "video"
+        mtype = "video"
+    
+    target_dir = dirs[mtype_dir]
     safe_name = f"{int(__import__('time').time())}_{filename.replace('/', '_')}"
     target_path = target_dir / safe_name
     with open(target_path, "wb") as out:
@@ -1012,7 +1025,7 @@ async def api_upload_media(project_id: str, file: UploadFile = File(...)):
     file_url = f"/files/{rel_from_project}"
     item = {
         "id": safe_name,
-        "type": mtype[:-1] if mtype.endswith("s") else mtype,
+        "type": mtype,
         "path": f"project_data/{rel_from_project}",
         "url": file_url,
         "source": "uploaded",
@@ -1204,11 +1217,50 @@ def api_fix_media_formats(project_id: str):
     return {"status": "ok", "fixed": fixed_count}
 
 
+@app.post("/storage/{project_id}/media/normalize-types")
+def api_normalize_media_types(project_id: str):
+    """
+    Fix any media items with incorrect type values (e.g., 'images' instead of 'image').
+    Returns number of items fixed.
+    """
+    ensure_project(project_id)
+    meta = read_metadata(project_id)
+    media_list = meta.get("media", [])
+    fixed_count = 0
+    
+    for item in media_list:
+        old_type = item.get("type")
+        # Normalize types
+        if old_type == "images":
+            item["type"] = "image"
+            fixed_count += 1
+        elif old_type == "videos":
+            item["type"] = "video"
+            fixed_count += 1
+        elif old_type == "audios":
+            item["type"] = "audio"
+            fixed_count += 1
+        
+        # Also ensure source is set
+        if "source" not in item:
+            file_id = item.get("id", "")
+            if "_first.png" in file_id or "_last.png" in file_id:
+                item["source"] = "extracted"
+            else:
+                item["source"] = "generated"
+            fixed_count += 1
+    
+    if fixed_count > 0:
+        write_metadata(project_id, meta)
+    
+    return {"status": "ok", "fixed": fixed_count}
+
 @app.post("/storage/{project_id}/media/scan")
 def api_scan_media(project_id: str):
     """
     Scan project_data/<project_id>/media/{video,audio,images} for files that are not
     present in metadata and add them. Returns number of new items indexed.
+    Also normalizes any incorrect types.
     """
     ensure_project(project_id)
     proj_dir = PROJECT_DATA_DIR / project_id
@@ -1259,6 +1311,15 @@ def api_scan_media(project_id: str):
         if f.is_file() and f.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
             add_item(f, "image")
 
+    # Normalize types in existing items before persisting
+    for item in existing:
+        if item.get("type") == "images":
+            item["type"] = "image"
+        elif item.get("type") == "videos":
+            item["type"] = "video"
+        elif item.get("type") == "audios":
+            item["type"] = "audio"
+    
     # Persist
     meta = read_metadata(project_id)
     meta["media"] = existing
