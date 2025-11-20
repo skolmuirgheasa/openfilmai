@@ -86,6 +86,7 @@ export default function App() {
   
   // Multi-Character Lip-Sync state
   type CharacterBoundingBox = {
+    box_id: string; // unique ID for this box instance
     character_id: string;
     character_name: string;
     x: number; // percentage 0-100
@@ -519,16 +520,11 @@ export default function App() {
     const char = characters.find(c => c.character_id === selectedCharacterId);
     if (!char) return;
     
-    // Check if this character already has a bounding box
-    if (multiLipSyncBoundingBoxes.some(b => b.character_id === char.character_id)) {
-      alert(`${char.name} already has a bounding box. Remove it first to add a new one.`);
-      return;
-    }
-    
     // Offset each new box slightly so they don't overlap
     const offset = multiLipSyncBoundingBoxes.length * 5;
     
     const newBox: CharacterBoundingBox = {
+      box_id: `box_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       character_id: char.character_id,
       character_name: char.name,
       x: 25 + offset,
@@ -540,13 +536,13 @@ export default function App() {
     setMultiLipSyncBoundingBoxes([...multiLipSyncBoundingBoxes, newBox]);
   }
   
-  function removeCharacterBoundingBox(character_id: string) {
-    setMultiLipSyncBoundingBoxes(multiLipSyncBoundingBoxes.filter(b => b.character_id !== character_id));
+  function removeCharacterBoundingBox(box_id: string) {
+    setMultiLipSyncBoundingBoxes(multiLipSyncBoundingBoxes.filter(b => b.box_id !== box_id));
   }
   
-  function updateCharacterBoundingBox(character_id: string, updates: Partial<CharacterBoundingBox>) {
+  function updateCharacterBoundingBox(box_id: string, updates: Partial<CharacterBoundingBox>) {
     setMultiLipSyncBoundingBoxes(multiLipSyncBoundingBoxes.map(b => 
-      b.character_id === character_id ? { ...b, ...updates } : b
+      b.box_id === box_id ? { ...b, ...updates } : b
     ));
   }
   
@@ -3584,7 +3580,9 @@ export default function App() {
               {/* Multi-Character Lip-Sync */}
               <Dialog.Root open={isMultiLipSyncOpen} onOpenChange={setIsMultiLipSyncOpen}>
                 <Dialog.Trigger asChild>
-                  <button className="button">Multi-Character Lip-Sync</button>
+                  <button className="button" title="UI ready, backend compositing in progress">
+                    Multi-Character Lip-Sync (Beta)
+                  </button>
                 </Dialog.Trigger>
                 <Dialog.Portal>
                   <Dialog.Overlay className="fixed inset-0 bg-black/60" />
@@ -3616,7 +3614,7 @@ export default function App() {
                             {/* Draw bounding boxes */}
                             {multiLipSyncBoundingBoxes.map((box, idx) => (
                               <div
-                                key={box.character_id}
+                                key={box.box_id}
                                 className="absolute border-2 border-violet-500"
                                 style={{
                                   left: `${box.x}%`,
@@ -3626,7 +3624,7 @@ export default function App() {
                                 }}
                               >
                                 <div className="absolute -top-5 left-0 text-[10px] bg-violet-500 text-white px-1 rounded">
-                                  {box.character_name}
+                                  {box.character_name} #{idx + 1}
                                 </div>
                               </div>
                             ))}
@@ -3673,15 +3671,15 @@ export default function App() {
                           </div>
                         ) : (
                           <div className="space-y-3 max-h-[500px] overflow-y-auto">
-                            {multiLipSyncBoundingBoxes.map((box) => {
+                            {multiLipSyncBoundingBoxes.map((box, idx) => {
                               const assignedAudio = box.audio_track_id ? media.find(m => m.id === box.audio_track_id) : null;
                               return (
-                                <div key={box.character_id} className="border border-neutral-700 rounded p-3 bg-neutral-900/30">
+                                <div key={box.box_id} className="border border-neutral-700 rounded p-3 bg-neutral-900/30">
                                   <div className="flex items-center justify-between mb-2">
-                                    <div className="text-xs font-semibold text-violet-400">{box.character_name}</div>
+                                    <div className="text-xs font-semibold text-violet-400">{box.character_name} #{idx + 1}</div>
                                     <button
                                       className="text-xs text-red-400 hover:text-red-300"
-                                      onClick={() => removeCharacterBoundingBox(box.character_id)}
+                                      onClick={() => removeCharacterBoundingBox(box.box_id)}
                                     >
                                       ✕
                                     </button>
@@ -3695,28 +3693,28 @@ export default function App() {
                                         type="number"
                                         placeholder="X %"
                                         value={box.x}
-                                        onChange={(e) => updateCharacterBoundingBox(box.character_id, { x: parseFloat(e.target.value) || 0 })}
+                                        onChange={(e) => updateCharacterBoundingBox(box.box_id, { x: parseFloat(e.target.value) || 0 })}
                                       />
                                       <input
                                         className="field text-[10px]"
                                         type="number"
                                         placeholder="Y %"
                                         value={box.y}
-                                        onChange={(e) => updateCharacterBoundingBox(box.character_id, { y: parseFloat(e.target.value) || 0 })}
+                                        onChange={(e) => updateCharacterBoundingBox(box.box_id, { y: parseFloat(e.target.value) || 0 })}
                                       />
                                       <input
                                         className="field text-[10px]"
                                         type="number"
                                         placeholder="Width %"
                                         value={box.width}
-                                        onChange={(e) => updateCharacterBoundingBox(box.character_id, { width: parseFloat(e.target.value) || 0 })}
+                                        onChange={(e) => updateCharacterBoundingBox(box.box_id, { width: parseFloat(e.target.value) || 0 })}
                                       />
                                       <input
                                         className="field text-[10px]"
                                         type="number"
                                         placeholder="Height %"
                                         value={box.height}
-                                        onChange={(e) => updateCharacterBoundingBox(box.character_id, { height: parseFloat(e.target.value) || 0 })}
+                                        onChange={(e) => updateCharacterBoundingBox(box.box_id, { height: parseFloat(e.target.value) || 0 })}
                                       />
                                     </div>
                                     
@@ -3724,7 +3722,7 @@ export default function App() {
                                     <select
                                       className="field text-xs"
                                       value={box.audio_track_id || ''}
-                                      onChange={(e) => updateCharacterBoundingBox(box.character_id, { audio_track_id: e.target.value || null })}
+                                      onChange={(e) => updateCharacterBoundingBox(box.box_id, { audio_track_id: e.target.value || null })}
                                     >
                                       <option value="">Select audio...</option>
                                       {audioMedia.map(a => (

@@ -90,6 +90,27 @@ def add_media(project_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
     import time as time_module
     meta = read_metadata(project_id)
     media = meta.get("media", [])
+    
+    # Check for duplicate IDs and append (1), (2), etc. if needed
+    original_id = item.get("id", "")
+    if original_id:
+        existing_ids = {m.get("id") for m in media}
+        if original_id in existing_ids:
+            # Find the next available number
+            counter = 1
+            base_name, ext = original_id.rsplit(".", 1) if "." in original_id else (original_id, "")
+            while True:
+                new_id = f"{base_name} ({counter}).{ext}" if ext else f"{base_name} ({counter})"
+                if new_id not in existing_ids:
+                    item["id"] = new_id
+                    # Also update path and url if they exist
+                    if "path" in item and original_id in item["path"]:
+                        item["path"] = item["path"].replace(original_id, new_id)
+                    if "url" in item and original_id in item["url"]:
+                        item["url"] = item["url"].replace(original_id, new_id)
+                    break
+                counter += 1
+    
     # Auto-tag source if not specified
     if "source" not in item:
         if "_first.png" in item.get("id", "") or "_last.png" in item.get("id", ""):
