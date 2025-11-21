@@ -3161,9 +3161,12 @@ export default function App() {
                         {lipAudioId && (() => {
                           const selectedAudio = media.find(m => m.id === lipAudioId);
                           return selectedAudio ? (
-                            <audio controls className="h-6 max-w-[200px]">
-                              <source src={`http://127.0.0.1:8000${selectedAudio.url}`} />
-                            </audio>
+                            <audio 
+                              key={lipAudioId}
+                              controls 
+                              className="h-6 max-w-[200px]" 
+                              src={`http://127.0.0.1:8000${selectedAudio.url}`}
+                            />
                           ) : null;
                         })()}
                       </div>
@@ -3756,9 +3759,12 @@ export default function App() {
                                     
                                     {assignedAudio && (
                                       <div className="bg-neutral-800/50 rounded p-1">
-                                        <audio controls className="w-full h-6">
-                                          <source src={`http://127.0.0.1:8000${assignedAudio.url}`} />
-                                        </audio>
+                                        <audio 
+                                          key={assignedAudio.id}
+                                          controls 
+                                          className="w-full h-6"
+                                          src={`http://127.0.0.1:8000${assignedAudio.url}`}
+                                        />
                                       </div>
                                     )}
                                   </div>
