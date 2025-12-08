@@ -121,7 +121,9 @@ OpenFilm AI integrates with multiple AI providers. You'll need API keys or crede
 
 ### Replicate API
 
-**What it's used for:** Video generation (Veo 3.1, NanoBanana, etc.) and image models
+**What it's used for:** 
+- Video generation (Veo 3.1, NanoBanana, etc.)
+- Image generation (Seedream-4, etc.)
 
 **Setup:**
 1. Sign up at [replicate.com](https://replicate.com)
@@ -272,6 +274,16 @@ Characters help maintain consistency across your project:
 2. Upload 1-3 reference images
 3. Set a voice ID (from ElevenLabs)
 4. When generating media, select the character to auto-fill images and voice
+
+### Voice Scene Builder
+
+For planning complex dialogue scenes:
+
+1. Click "Voice Scene Builder" in the bottom toolbar
+2. Create slots for each line of dialogue
+3. Assign visuals (videos/images) and characters to each slot
+4. Generate voice (TTS) and Lip-Sync for each line
+5. Export the assembled scene (Coming Soon)
 
 ## Troubleshooting
 
