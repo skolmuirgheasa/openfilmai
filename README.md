@@ -10,6 +10,7 @@ An open-source desktop application for AI-powered video, image, and audio genera
 - **Scene-Based Editing**: Organize your project into scenes and shots
 - **Character Management**: Store character profiles with reference images and voice IDs
 - **Media Library**: Manage all your generated assets in one place
+- **Smooth Transitions**: Optical flow smoothing between clips for seamless continuity
 
 ## Prerequisites
 
@@ -17,7 +18,7 @@ Before you begin, make sure you have the following installed:
 
 - **Node.js** (v18 or higher) - [Download](https://nodejs.org/)
 - **Python** (3.9 or higher) - [Download](https://www.python.org/downloads/)
-- **ffmpeg** - Required for audio/video processing
+- **ffmpeg** - Required for audio/video processing (including ffprobe for metadata)
 
 ### Installing ffmpeg
 
@@ -38,6 +39,7 @@ Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to your PAT
 Verify installation:
 ```bash
 ffmpeg -version
+ffprobe -version
 ```
 
 ## Installation
@@ -205,6 +207,47 @@ OpenFilm AI integrates with multiple AI providers. You'll need API keys or crede
 - The GCS bucket is used for temporary storage of images during video generation. You'll be charged for storage and data transfer according to Google Cloud pricing.
 - If you don't specify a bucket name, the app will attempt to create one automatically using your project ID.
 
+## How Smoothing Works
+
+OpenFilm AI includes a powerful smoothing feature to create seamless transitions between clips, especially when generating continuous shots.
+
+**The Concept:**
+When you generate a new shot using the "End Frame" of the previous shot as the "Start Frame", there can still be a slight jump or stutter. Smoothing fixes this by using optical flow interpolation.
+
+**How to use it:**
+1. On the timeline, you'll see a small arrow `→` between two adjacent clips.
+2. Click the **"Smooth"** checkbox in the transition bar.
+3. Click **"Apply"**.
+
+**What happens under the hood:**
+1. The app takes the last few frames of Clip A and the first few frames of Clip B.
+2. It uses OpenCV's DIS (Dense Inverse Search) optical flow algorithm to analyze the motion between frames.
+3. It generates intermediate frames to blend the motion seamlessly.
+4. The result is a new, merged video file that replaces the original two clips on the timeline.
+
+**Note:** This process requires the backend to process video frames, so it may take a few seconds depending on your hardware.
+
+## Integrating Custom Models
+
+OpenFilm AI is designed to be extensible. While it comes with built-in support for major providers, you can add custom models running locally or on other endpoints.
+
+### Adding a Local Model (Advanced)
+
+Currently, adding local models requires modifying the backend code. We are working on a plugin system, but for now:
+
+1. **Backend Integration:**
+   - Navigate to `backend/ai/`.
+   - Create a new client file (e.g., `my_model_client.py`) that implements the generation logic.
+   - You can look at `replicate_client.py` for inspiration.
+   - Register your new client in `backend/main.py`.
+
+2. **Frontend UI:**
+   - In `frontend/src/App.tsx`, look for the `replicateModel` select dropdown.
+   - Add your new model to the list of options.
+   - Ensure the backend `generate_shot` endpoint handles the new model string.
+
+For simple integrations (e.g., using a different Replicate model), you can often just add the model ID string (e.g., `owner/model-name`) to the frontend dropdown, as the Replicate client is generic.
+
 ## Project Structure
 
 ```
@@ -217,7 +260,7 @@ openfilmai/
 ├── backend/              # Python FastAPI backend
 │   ├── main.py          # Main server file
 │   ├── ai/              # AI provider clients
-│   ├── video/           # Video processing (FFmpeg)
+│   ├── video/           # Video processing (FFmpeg, OpenCV)
 │   └── storage/         # File and metadata management
 ├── ai_porting_bundle/   # Reusable AI provider bundle
 │   ├── providers/       # AI provider implementations
@@ -275,16 +318,6 @@ Characters help maintain consistency across your project:
 3. Set a voice ID (from ElevenLabs)
 4. When generating media, select the character to auto-fill images and voice
 
-### Voice Scene Builder
-
-For planning complex dialogue scenes:
-
-1. Click "Voice Scene Builder" in the bottom toolbar
-2. Create slots for each line of dialogue
-3. Assign visuals (videos/images) and characters to each slot
-4. Generate voice (TTS) and Lip-Sync for each line
-5. Export the assembled scene (Coming Soon)
-
 ## Troubleshooting
 
 ### Backend Won't Start
@@ -309,10 +342,11 @@ For planning complex dialogue scenes:
 
 ### ffmpeg Not Found
 
-**Problem:** Errors about ffmpeg not being found.
+**Problem:** Errors about ffmpeg not being found or "8s" duration showing incorrectly.
 
 **Solutions:**
 - Verify ffmpeg is installed: `ffmpeg -version`
+- **Crucial:** Verify `ffprobe` is also installed: `ffprobe -version`
 - Make sure ffmpeg is in your PATH
 - On macOS, try: `brew install ffmpeg`
 - On Windows, download from ffmpeg.org and add to PATH

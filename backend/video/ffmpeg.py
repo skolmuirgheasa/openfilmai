@@ -9,31 +9,70 @@ def extract_first_last_frames(video_path: str, out_first: str, out_last: str) ->
     last = Path(out_last)
 
     # First frame
-    subprocess.run([
-        "ffmpeg", "-y", "-i", str(video), "-vf", "select=eq(n\\,0)", "-vframes", "1", str(first)
-    ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-i", str(video), "-vf", "select=eq(n\\,0)", "-vframes", "1", str(first)
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        print(f"Error extracting first frame: {e.stderr.decode()}")
 
-    # Last frame - use duration-based seeking (more reliable than -sseof)
-    # Get video duration first
+    # Last frame - use duration-based seeking
+    duration = get_video_duration(str(video))
+    
+    if duration > 0:
+        # Seek to last frame (1 frame before end at 24fps = ~0.04s, use 0.05 for safety)
+        seek_time = max(0, duration - 0.05)
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-ss", str(seek_time), "-i", str(video), "-vframes", "1", str(last)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as e:
+            print(f"Error extracting last frame (seek): {e.stderr.decode()}")
+    else:
+        # Fallback to old method if duration probe fails
+        try:
+            subprocess.run([
+                "ffmpeg", "-y", "-sseof", "-1", "-i", str(video), "-vframes", "1", str(last)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as e:
+            print(f"Error extracting last frame (sseof): {e.stderr.decode()}")
+
+    return str(first), str(last)
+
+
+def get_video_duration(video_path: str) -> float:
+    """Get the duration of a video file in seconds."""
+    video = Path(video_path)
+    
+    # Try format duration first
     probe = subprocess.run([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", str(video)
     ], capture_output=True, text=True)
     
     if probe.returncode == 0 and probe.stdout.strip():
-        duration = float(probe.stdout.strip())
-        # Seek to last frame (1 frame before end at 24fps = ~0.04s, use 0.05 for safety)
-        seek_time = max(0, duration - 0.05)
-        subprocess.run([
-            "ffmpeg", "-y", "-ss", str(seek_time), "-i", str(video), "-vframes", "1", str(last)
-        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        # Fallback to old method if probe fails
-        subprocess.run([
-            "ffmpeg", "-y", "-sseof", "-1", "-i", str(video), "-vframes", "1", str(last)
-        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    return str(first), str(last)
+        try:
+            val = float(probe.stdout.strip())
+            if val > 0: return val
+        except ValueError:
+            pass
+            
+    # Fallback to stream duration if format duration fails
+    probe_stream = subprocess.run([
+        "ffprobe", "-v", "error", "-select_streams", "v:0", 
+        "-show_entries", "stream=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(video)
+    ], capture_output=True, text=True)
+    
+    if probe_stream.returncode == 0 and probe_stream.stdout.strip():
+        try:
+            val = float(probe_stream.stdout.strip())
+            if val > 0: return val
+        except ValueError:
+            pass
+            
+    print(f"Warning: Could not determine duration for {video_path}")
+    return 0.0
 
 
 def replace_first_frame(video_path: str, replacement_frame: str, output_path: str) -> str:

@@ -902,7 +902,7 @@ class ShotCreate(BaseModel):
     shot_id: str
     prompt: Optional[str] = None
     model: Optional[str] = None
-    duration: Optional[int] = None
+    duration: Optional[float] = None
     file_path: Optional[str] = None
     first_frame_path: Optional[str] = None
     last_frame_path: Optional[str] = None
@@ -914,7 +914,7 @@ class ShotCreate(BaseModel):
 
 @app.post("/storage/{project_id}/scenes/{scene_id}/shots")
 def api_add_shot(project_id: str, scene_id: str, body: ShotCreate):
-    from backend.video.ffmpeg import extract_first_last_frames
+    from backend.video.ffmpeg import extract_first_last_frames, get_video_duration
     
     # Ensure scene exists; if not, create it for robustness
     scene = get_scene(project_id, scene_id)
@@ -927,8 +927,8 @@ def api_add_shot(project_id: str, scene_id: str, body: ShotCreate):
     
     shot_data = body.model_dump(exclude_none=True)
     
-    # If this is a video shot without frames, extract them
-    if shot_data.get('file_path') and not shot_data.get('first_frame_path'):
+    # If this is a video shot, handle frames and duration
+    if shot_data.get('file_path'):
         try:
             file_path = shot_data['file_path']
             # Resolve to absolute path
@@ -938,23 +938,36 @@ def api_add_shot(project_id: str, scene_id: str, body: ShotCreate):
                 abs_path = Path(file_path)
             
             if abs_path.exists() and abs_path.suffix.lower() in ['.mp4', '.mov', '.avi', '.mkv']:
-                # Extract frames to scene frames directory
-                dirs = ensure_scene_dirs(project_id, scene_id)
-                shot_id = shot_data.get('shot_id', f"shot_{int(__import__('time').time())}")
-                first_frame = dirs["frames"] / f"{shot_id}_first.png"
-                last_frame = dirs["frames"] / f"{shot_id}_last.png"
+                # 1. Extract frames if missing
+                if not shot_data.get('first_frame_path'):
+                    # Extract frames to scene frames directory
+                    dirs = ensure_scene_dirs(project_id, scene_id)
+                    shot_id = shot_data.get('shot_id', f"shot_{int(__import__('time').time())}")
+                    first_frame = dirs["frames"] / f"{shot_id}_first.png"
+                    last_frame = dirs["frames"] / f"{shot_id}_last.png"
+                    
+                    extract_first_last_frames(str(abs_path), str(first_frame), str(last_frame))
+                    
+                    # Add frame paths to shot data
+                    rel_first = str(first_frame.relative_to(PROJECT_DATA_DIR))
+                    rel_last = str(last_frame.relative_to(PROJECT_DATA_DIR))
+                    shot_data['first_frame_path'] = f"project_data/{rel_first}"
+                    shot_data['last_frame_path'] = f"project_data/{rel_last}"
                 
-                extract_first_last_frames(str(abs_path), str(first_frame), str(last_frame))
-                
-                # Add frame paths to shot data
-                rel_first = str(first_frame.relative_to(PROJECT_DATA_DIR))
-                rel_last = str(last_frame.relative_to(PROJECT_DATA_DIR))
-                shot_data['first_frame_path'] = f"project_data/{rel_first}"
-                shot_data['last_frame_path'] = f"project_data/{rel_last}"
+                # 2. Probe and update duration
+                # Always probe to get accurate duration, overriding any default
+                duration = get_video_duration(str(abs_path))
+                if duration > 0:
+                    shot_data['duration'] = duration
+                    logger.info(f"Probed duration for {file_path}: {duration}s")
+                else:
+                    logger.warning(f"Could not probe duration for {file_path}")
+                    
         except Exception as e:
-            logger.warning(f"Failed to extract frames for imported shot: {e}")
+            logger.warning(f"Failed to process video for imported shot: {e}", exc_info=True)
     
     shot = add_shot(project_id, scene_id, shot_data)
+    logger.info(f"Added shot {shot_data.get('shot_id')} with duration {shot_data.get('duration')}")
     return {"status": "ok", "shot": shot}
 
 

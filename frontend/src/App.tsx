@@ -2448,7 +2448,7 @@ export default function App() {
                               {media.filter((m) => m.type === 'video').length === 0 ? (
                                 <div className="col-span-3 text-xs text-neutral-500 text-center py-2">No videos</div>
                               ) : (
-                                media.filter((m) => m.type === 'video').map((m) => {
+                                  media.filter((m) => m.type === 'video').map((m) => {
                                   const selected = vxStartFromVideoId === m.id;
                                   return (
                                     <button
@@ -2464,10 +2464,10 @@ export default function App() {
                                         }
                                       }}
                                     >
-                                      <img
+                                      <video
                                         src={`http://127.0.0.1:8000${m.url}`}
                                         className="w-full h-full object-cover"
-                                        alt={m.id}
+                                        preload="metadata"
                                       />
                                       {selected ? (
                                         <div className="absolute inset-0 bg-violet-500/20 flex items-center justify-center">
@@ -2476,6 +2476,9 @@ export default function App() {
                                           </div>
                                         </div>
                                       ) : null}
+                                      <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-[8px] px-1 py-0.5 truncate opacity-0 group-hover:opacity-100 transition-opacity">
+                                        {m.id}
+                                      </div>
                                     </button>
                                   );
                                 })
@@ -3324,535 +3327,6 @@ export default function App() {
                 </Dialog.Portal>
               </Dialog.Root>
               
-              {/* Voice Scene Builder */}
-              <Dialog.Root open={isVoiceSceneOpen} onOpenChange={(open) => {
-                setIsVoiceSceneOpen(open);
-                if (!open && voiceSceneRecorderRef.current) {
-                  stopVoiceSceneRecording();
-                }
-              }}>
-                <Dialog.Trigger asChild>
-                  <button className="button">Voice Scene Builder</button>
-                </Dialog.Trigger>
-                <Dialog.Portal>
-                  <Dialog.Overlay className="fixed inset-0 bg-black/60" />
-                  <Dialog.Content className="fixed inset-4 overflow-y-auto card p-5">
-                    <Dialog.Title className="text-sm font-semibold mb-2">Voice Scene Builder</Dialog.Title>
-                    <Dialog.Description className="text-xs text-neutral-400 mb-3">
-                      Build a dialogue scene: visual + voice + lip-sync for each line
-                    </Dialog.Description>
-                    
-                    <div className="flex items-center gap-3 mb-4">
-                      <input
-                        className="field flex-1 text-sm"
-                        placeholder="Scene name"
-                        value={voiceSceneName}
-                        onChange={(e) => setVoiceSceneName(e.target.value)}
-                      />
-                      <button className="button-primary text-sm" onClick={addVoiceSceneSlot}>
-                        + Add Slot
-                      </button>
-                    </div>
-                    
-                    {voiceSceneSlots.length === 0 ? (
-                      <div className="text-xs text-neutral-500 text-center py-8">
-                        No slots yet. Click "+ Add Slot" to start.
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {voiceSceneSlots.map((slot, idx) => {
-                          const visual = slot.visualId ? media.find(m => m.id === slot.visualId) : null;
-                          const generatedVoice = slot.generatedVoiceId ? media.find(m => m.id === slot.generatedVoiceId) : null;
-                          const generatedLipSync = slot.generatedLipSyncId ? media.find(m => m.id === slot.generatedLipSyncId) : null;
-                          const selectedAudio = slot.selectedAudioId ? media.find(m => m.id === slot.selectedAudioId) : null;
-                          const isRecording = voiceSceneRecordingSlotId === slot.id;
-                          
-                          return (
-                            <div key={slot.id} className="border border-neutral-700 rounded-lg p-3 bg-neutral-900/30">
-                              <div className="flex items-center justify-between mb-2">
-                                <div className="text-xs font-semibold text-neutral-300">#{idx + 1}</div>
-                                <button
-                                  className="text-xs text-red-400 hover:text-red-300"
-                                  onClick={() => removeVoiceSceneSlot(slot.id)}
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                              
-                              <div className="grid grid-cols-[200px_1fr_200px] gap-3">
-                                {/* Visual Column */}
-                                <div>
-                                  <div className="text-[10px] uppercase text-neutral-500 mb-1">Visual</div>
-                                  {visual ? (
-                                    <div className="relative group">
-                                      {visual.type === 'image' ? (
-                                        <img src={`http://127.0.0.1:8000${visual.url}`} className="w-full h-28 object-cover rounded border border-neutral-700" />
-                                      ) : (
-                                        <video src={`http://127.0.0.1:8000${visual.url}`} className="w-full h-28 object-cover rounded border border-neutral-700" />
-                                      )}
-                                      <button
-                                        className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-xs text-white"
-                                        onClick={() => updateVoiceSceneSlot(slot.id, { visualId: null, visualType: null })}
-                                      >
-                                        Change
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <div
-                                      className="border-2 border-dashed border-neutral-700 rounded h-28 flex flex-col items-center justify-center text-[10px] text-neutral-500 hover:border-violet-500/50 cursor-pointer"
-                                      onDrop={async (e) => {
-                                        e.preventDefault();
-                                        const files = Array.from(e.dataTransfer.files);
-                                        if (files.length > 0) {
-                                          const formData = new FormData();
-                                          formData.append('file', files[0]);
-                                          formData.append('project_id', projectId);
-                                          const r = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`, {
-                                            method: 'POST',
-                                            body: formData
-                                          });
-                                          const d = await r.json();
-                                          if (d.status === 'ok' && d.item) {
-                                            await refreshMedia();
-                                            updateVoiceSceneSlot(slot.id, { visualId: d.item.id, visualType: d.item.type });
-                                          }
-                                        }
-                                      }}
-                                      onDragOver={(e) => e.preventDefault()}
-                                    >
-                                      <span>Drop file</span>
-                                      <span className="text-[9px] text-neutral-600 mt-1">or select below</span>
-                                    </div>
-                                  )}
-                                  {!visual && (
-                                    <div className="mt-1 max-h-32 overflow-y-auto border border-neutral-800 rounded p-1">
-                                      <div className="grid grid-cols-2 gap-1">
-                                        {[...imageMedia, ...videoMedia].slice(0, 20).map(m => (
-                                          <button
-                                            key={m.id}
-                                            className="relative group"
-                                            onClick={() => updateVoiceSceneSlot(slot.id, { visualId: m.id, visualType: m.type as 'image' | 'video' })}
-                                          >
-                                            {m.type === 'image' ? (
-                                              <img src={`http://127.0.0.1:8000${m.url}`} className="w-full h-12 object-cover rounded border border-neutral-700 hover:border-violet-500" />
-                                            ) : (
-                                              <video src={`http://127.0.0.1:8000${m.url}`} className="w-full h-12 object-cover rounded border border-neutral-700 hover:border-violet-500" />
-                                            )}
-                                          </button>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                                
-                                {/* Voice Column */}
-                                <div className="space-y-2">
-                                  <div className="text-[10px] uppercase text-neutral-500">Voice Setup</div>
-                                  <div className="grid grid-cols-2 gap-2">
-                                    <select
-                                      className="field text-xs"
-                                      value={slot.characterId || ''}
-                                      onChange={(e) => {
-                                        const charId = e.target.value || null;
-                                        const c = charId ? characters.find(ch => ch.character_id === charId) : null;
-                                        updateVoiceSceneSlot(slot.id, { characterId: charId, voiceId: c?.voice_id || '' });
-                                      }}
-                                    >
-                                      <option value="">Character...</option>
-                                      {characters.map(c => (
-                                        <option key={c.character_id} value={c.character_id}>{c.name}</option>
-                                      ))}
-                                    </select>
-                                    <input
-                                      className="field text-xs"
-                                      placeholder="Voice ID"
-                                      value={slot.voiceId}
-                                      onChange={(e) => updateVoiceSceneSlot(slot.id, { voiceId: e.target.value })}
-                                    />
-                                  </div>
-                                  
-                                  <textarea
-                                    className="field text-xs h-16"
-                                    placeholder="Dialogue text (for TTS)..."
-                                    value={slot.dialogueText}
-                                    onChange={(e) => updateVoiceSceneSlot(slot.id, { dialogueText: e.target.value })}
-                                  />
-                                  
-                                  <div className="flex gap-2">
-                                    <button
-                                      className={`text-[10px] px-2 py-1 rounded ${isRecording ? 'bg-red-500 text-white' : 'bg-neutral-700 hover:bg-neutral-600 text-neutral-300'}`}
-                                      onClick={() => isRecording ? stopVoiceSceneRecording() : startVoiceSceneRecording(slot.id)}
-                                    >
-                                      {isRecording ? '⏹ Stop' : '🎤 Record'}
-                                    </button>
-                                    <div
-                                      className="flex-1 border border-dashed border-neutral-700 rounded px-2 py-1 text-[10px] text-neutral-500 hover:border-violet-500/50 cursor-pointer flex items-center justify-center"
-                                      onDrop={async (e) => {
-                                        e.preventDefault();
-                                        const files = Array.from(e.dataTransfer.files);
-                                        if (files.length > 0) {
-                                          const formData = new FormData();
-                                          formData.append('file', files[0]);
-                                          formData.append('project_id', projectId);
-                                          const r = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`, {
-                                            method: 'POST',
-                                            body: formData
-                                          });
-                                          const d = await r.json();
-                                          if (d.status === 'ok' && d.item) {
-                                            await refreshMedia();
-                                            updateVoiceSceneSlot(slot.id, { selectedAudioId: d.item.id });
-                                          }
-                                        }
-                                      }}
-                                      onDragOver={(e) => e.preventDefault()}
-                                    >
-                                      Drop audio
-                                    </div>
-                                  </div>
-                                  
-                                  <select
-                                    className="field text-[10px]"
-                                    value={slot.selectedAudioId || ''}
-                                    onChange={(e) => updateVoiceSceneSlot(slot.id, { selectedAudioId: e.target.value || null })}
-                                  >
-                                    <option value="">Or select existing audio...</option>
-                                    {audioMedia.map(a => (
-                                      <option key={a.id} value={a.id}>{a.id}</option>
-                                    ))}
-                                  </select>
-                                  
-                                  {selectedAudio && (
-                                    <div className="bg-neutral-800/50 rounded p-1">
-                                      <div className="text-[9px] text-neutral-500 mb-1">Selected: {selectedAudio.id}</div>
-                                      <audio key={selectedAudio.id} controls className="w-full h-6">
-                                        <source src={`http://127.0.0.1:8000${selectedAudio.url}?t=${Date.now()}`} />
-                                      </audio>
-                                    </div>
-                                  )}
-                                  
-                                  <button
-                                    className="button-primary w-full text-xs py-1"
-                                    onClick={() => generateVoiceForSlot(slot.id)}
-                                    disabled={!slot.dialogueText.trim() && !slot.recordedAudioPath && !slot.selectedAudioId}
-                                  >
-                                    Generate Voice
-                                  </button>
-                                  
-                                  {generatedVoice && (
-                                    <div className="bg-green-900/20 border border-green-500/30 rounded p-1">
-                                      <div className="text-[9px] text-green-400 mb-1">✓ Generated: {generatedVoice.id}</div>
-                                      <audio key={generatedVoice.id} controls className="w-full h-6">
-                                        <source src={`http://127.0.0.1:8000${generatedVoice.url}?t=${Date.now()}`} />
-                                      </audio>
-                                    </div>
-                                  )}
-                                </div>
-                                
-                                {/* Lip-Sync Column */}
-                                <div>
-                                  <div className="text-[10px] uppercase text-neutral-500 mb-1">Lip-Sync</div>
-                                  {generatedLipSync ? (
-                                    <div>
-                                      <video
-                                        src={`http://127.0.0.1:8000${generatedLipSync.url}`}
-                                        controls
-                                        className="w-full h-28 rounded border border-green-500/30"
-                                      />
-                                      <div className="text-[10px] text-green-400 mt-1">✓ Complete</div>
-                                    </div>
-                                  ) : (
-                                    <div className="space-y-2">
-                                      <div className="text-[10px] text-neutral-500 bg-neutral-800/50 rounded p-2 h-16 flex flex-col items-center justify-center">
-                                        {!slot.visualId ? (
-                                          <span>⚠ Need visual</span>
-                                        ) : !(slot.generatedVoiceId || slot.selectedAudioId) ? (
-                                          <span>⚠ Need audio</span>
-                                        ) : (
-                                          <span className="text-green-400">✓ Ready</span>
-                                        )}
-                                      </div>
-                                      <input
-                                        className="field text-[10px]"
-                                        placeholder="Prompt (optional)"
-                                        value={slot.lipSyncPrompt}
-                                        onChange={(e) => updateVoiceSceneSlot(slot.id, { lipSyncPrompt: e.target.value })}
-                                      />
-                                      <button
-                                        className="button-primary w-full text-xs py-1"
-                                        onClick={() => generateLipSyncForSlot(slot.id)}
-                                        disabled={!slot.visualId || !(slot.generatedVoiceId || slot.selectedAudioId)}
-                                      >
-                                        Generate
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    
-                    <div className="mt-4 flex justify-end gap-2">
-                      <Dialog.Close asChild>
-                        <button className="button">Close</button>
-                      </Dialog.Close>
-                    </div>
-                  </Dialog.Content>
-                </Dialog.Portal>
-              </Dialog.Root>
-              
-              {/* Multi-Character Lip-Sync */}
-              <Dialog.Root open={isMultiLipSyncOpen} onOpenChange={setIsMultiLipSyncOpen}>
-                <Dialog.Trigger asChild>
-                  <button className="button" title="UI ready, backend compositing in progress">
-                    Multi-Character Lip-Sync (Beta)
-                  </button>
-                </Dialog.Trigger>
-                <Dialog.Portal>
-                  <Dialog.Overlay className="fixed inset-0 bg-black/60" />
-                  <Dialog.Content className="fixed inset-4 overflow-y-auto card p-5">
-                    <Dialog.Title className="text-sm font-semibold mb-2">Multi-Character Lip-Sync</Dialog.Title>
-                    <Dialog.Description className="text-xs text-neutral-400 mb-3">
-                      Precisely assign audio tracks to specific characters using bounding boxes
-                    </Dialog.Description>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      {/* Left: Image + Bounding Boxes */}
-                      <div>
-                        <div className="text-xs text-neutral-400 mb-2">Reference Image</div>
-                        {multiLipSyncImageId ? (
-                          <div className="relative">
-                            <img 
-                              src={`http://127.0.0.1:8000${media.find(m => m.id === multiLipSyncImageId)?.url}`}
-                              className="w-full rounded border border-neutral-700"
-                            />
-                            <button
-                              className="absolute top-2 right-2 text-xs px-2 py-1 bg-red-500/80 hover:bg-red-500 rounded text-white"
-                              onClick={() => {
-                                setMultiLipSyncImageId(null);
-                                setMultiLipSyncBoundingBoxes([]);
-                              }}
-                            >
-                              Change Image
-                            </button>
-                            {/* Draw bounding boxes */}
-                            {multiLipSyncBoundingBoxes.map((box, idx) => (
-                              <div
-                                key={box.box_id}
-                                className="absolute border-2 border-violet-500"
-                                style={{
-                                  left: `${box.x}%`,
-                                  top: `${box.y}%`,
-                                  width: `${box.width}%`,
-                                  height: `${box.height}%`
-                                }}
-                              >
-                                <div className="absolute -top-5 left-0 text-[10px] bg-violet-500 text-white px-1 rounded">
-                                  {box.character_name} #{idx + 1}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="border-2 border-dashed border-neutral-700 rounded h-96 flex items-center justify-center">
-                            <div className="text-center">
-                              <div className="text-xs text-neutral-500 mb-3">Select an image</div>
-                              <div className="max-h-64 overflow-y-auto grid grid-cols-3 gap-2 p-2">
-                                {imageMedia.slice(0, 30).map(img => (
-                                  <button
-                                    key={img.id}
-                                    onClick={() => setMultiLipSyncImageId(img.id)}
-                                    className="relative group"
-                                  >
-                                    <img 
-                                      src={`http://127.0.0.1:8000${img.url}`}
-                                      className="w-full h-20 object-cover rounded border border-neutral-700 hover:border-violet-500"
-                                    />
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Right: Character Assignments */}
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="text-xs text-neutral-400">Character Assignments</div>
-                          <button
-                            className="button-primary text-xs px-2 py-1"
-                            onClick={addCharacterBoundingBox}
-                            disabled={!selectedCharacterId || !multiLipSyncImageId}
-                          >
-                            + Add Character
-                          </button>
-                        </div>
-                        
-                        {multiLipSyncBoundingBoxes.length === 0 ? (
-                          <div className="text-xs text-neutral-500 text-center py-8 border border-dashed border-neutral-700 rounded">
-                            Select a character and click "+ Add Character"
-                          </div>
-                        ) : (
-                          <div className="space-y-3 max-h-[500px] overflow-y-auto">
-                            {multiLipSyncBoundingBoxes.map((box, idx) => {
-                              const assignedAudio = box.audio_track_id ? media.find(m => m.id === box.audio_track_id) : null;
-                              return (
-                                <div key={box.box_id} className="border border-neutral-700 rounded p-3 bg-neutral-900/30">
-                                  <div className="flex items-center justify-between mb-2">
-                                    <div className="text-xs font-semibold text-violet-400">{box.character_name} #{idx + 1}</div>
-                                    <button
-                                      className="text-xs text-red-400 hover:text-red-300"
-                                      onClick={() => removeCharacterBoundingBox(box.box_id)}
-                                    >
-                                      ✕
-                                    </button>
-                                  </div>
-                                  
-                                  <div className="space-y-2">
-                                    <div className="text-[10px] text-neutral-500 mb-1">Bounding Box (% of image)</div>
-                                    <div className="grid grid-cols-2 gap-2">
-                                      <input
-                                        className="field text-[10px]"
-                                        type="number"
-                                        placeholder="X %"
-                                        value={box.x}
-                                        onChange={(e) => updateCharacterBoundingBox(box.box_id, { x: parseFloat(e.target.value) || 0 })}
-                                      />
-                                      <input
-                                        className="field text-[10px]"
-                                        type="number"
-                                        placeholder="Y %"
-                                        value={box.y}
-                                        onChange={(e) => updateCharacterBoundingBox(box.box_id, { y: parseFloat(e.target.value) || 0 })}
-                                      />
-                                      <input
-                                        className="field text-[10px]"
-                                        type="number"
-                                        placeholder="Width %"
-                                        value={box.width}
-                                        onChange={(e) => updateCharacterBoundingBox(box.box_id, { width: parseFloat(e.target.value) || 0 })}
-                                      />
-                                      <input
-                                        className="field text-[10px]"
-                                        type="number"
-                                        placeholder="Height %"
-                                        value={box.height}
-                                        onChange={(e) => updateCharacterBoundingBox(box.box_id, { height: parseFloat(e.target.value) || 0 })}
-                                      />
-                                    </div>
-                                    
-                                    <div className="text-[10px] text-neutral-500 mb-1">Audio Track</div>
-                                    <select
-                                      className="field text-xs"
-                                      value={box.audio_track_id || ''}
-                                      onChange={(e) => updateCharacterBoundingBox(box.box_id, { audio_track_id: e.target.value || null })}
-                                    >
-                                      <option value="">Select audio...</option>
-                                      {audioMedia.map(a => (
-                                        <option key={a.id} value={a.id}>{a.id}</option>
-                                      ))}
-                                    </select>
-                                    
-                                    {assignedAudio && (
-                                      <div className="bg-neutral-800/50 rounded p-1">
-                                        <audio 
-                                          key={assignedAudio.id}
-                                          controls 
-                                          className="w-full h-6"
-                                          src={`http://127.0.0.1:8000${assignedAudio.url}`}
-                                        />
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                        
-                        <div className="space-y-2 pt-3 border-t border-neutral-700">
-                          <input
-                            className="field text-xs"
-                            placeholder="Prompt (optional)"
-                            value={multiLipSyncPrompt}
-                            onChange={(e) => setMultiLipSyncPrompt(e.target.value)}
-                          />
-                          <input
-                            className="field text-xs"
-                            placeholder="Output filename"
-                            value={multiLipSyncOutputName}
-                            onChange={(e) => setMultiLipSyncOutputName(e.target.value)}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="mt-4 flex justify-between items-center">
-                      <div className="text-[10px] text-neutral-500">
-                        {multiLipSyncBoundingBoxes.length} character(s) • {multiLipSyncBoundingBoxes.filter(b => b.audio_track_id).length} assigned
-                      </div>
-                      <div className="flex gap-2">
-                        <Dialog.Close asChild>
-                          <button className="button">Cancel</button>
-                        </Dialog.Close>
-                        <button
-                          className="button-primary"
-                          onClick={generateMultiCharacterLipSync}
-                          disabled={!multiLipSyncImageId || multiLipSyncBoundingBoxes.length === 0 || multiLipSyncBoundingBoxes.some(b => !b.audio_track_id)}
-                        >
-                          Generate Multi-Character Lip-Sync
-                        </button>
-                      </div>
-                    </div>
-                  </Dialog.Content>
-                </Dialog.Portal>
-              </Dialog.Root>
-              
-              <button
-                className="button"
-                onClick={() => {
-                  if (!sceneDetail?.shots?.length) return;
-                  setPlayIdx(0);
-                  const first = sceneDetail.shots[0];
-                  const videoRel = first.file_path?.replace('project_data/', '');
-                  const vidUrl = videoRel?.startsWith('project_data') ? `http://127.0.0.1:8000/files/${videoRel.replace('project_data/', '')}` : `http://127.0.0.1:8000/files/${videoRel ?? ''}`;
-                  setCurrentImageUrl(null);
-                  setCurrentVideoUrl(vidUrl);
-                }}
-              >
-                <Play className="w-4 h-4" /> Play Scene
-              </button>
-              <button
-                className="button text-xs"
-                onClick={async () => {
-                  const jobId = startJob('Fixing video formats...');
-                  try {
-                    const r = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media/fix-formats`, {
-                      method: 'POST'
-                    });
-                    const d = await r.json();
-                    if (d.status === 'ok') {
-                      await refreshMedia();
-                      finishJob(jobId, 'done', `Fixed ${d.fixed} videos`);
-                      if (d.fixed > 0) {
-                        alert(`Fixed ${d.fixed} video(s) for browser compatibility!`);
-                      } else {
-                        alert('All videos are already compatible!');
-                      }
-                    } else {
-                      finishJob(jobId, 'error', 'Failed to fix formats');
-                    }
-                  } catch (e: any) {
-                    finishJob(jobId, 'error', e.message);
-                  }
-                }}
-              >
-                🔧 Fix Video Formats
-              </button>
               <button
                 className="button disabled:opacity-50"
                 disabled={!selectedMediaId}
@@ -3877,8 +3351,7 @@ export default function App() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                       shot_id: shotId,
-                      file_path: mediaItem.path,
-                      duration: 8
+                      file_path: mediaItem.path
                     })
                   });
                   const d2 = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId || 'scene_001'}`).then((r) => r.json());
@@ -4055,8 +3528,8 @@ export default function App() {
                       <div className="absolute top-1 left-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded">
                         {idx + 1}
                       </div>
-                      <div className="absolute top-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded">
-                        {duration}s
+                      <div className="absolute top-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded" title={sh.duration ? 'Actual duration' : 'Default duration (unknown)'}>
+                        {sh.duration ? `${sh.duration}s` : '8s?'}
                       </div>
                       {sh.file_path && (
                         <button
@@ -4380,7 +3853,7 @@ export default function App() {
                 </div>
                 <div>
                   <div className="text-neutral-500 uppercase tracking-wide mb-1">Duration</div>
-                  <div className="text-neutral-200">{shot.duration ?? 8}s</div>
+                  <div className="text-neutral-200">{shot.duration ? `${shot.duration}s` : 'Unknown (using 8s)'}</div>
                 </div>
                 <div>
                   <div className="text-neutral-500 uppercase tracking-wide mb-1">Provider</div>
