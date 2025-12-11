@@ -7,35 +7,49 @@ def extract_first_last_frames(video_path: str, out_first: str, out_last: str) ->
     video = Path(video_path)
     first = Path(out_first)
     last = Path(out_last)
+    
+    # Ensure output directories exist
+    first.parent.mkdir(parents=True, exist_ok=True)
+    last.parent.mkdir(parents=True, exist_ok=True)
 
-    # First frame
+    # First frame - use simple seeking to start
     try:
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(video), "-vf", "select=eq(n\\,0)", "-vframes", "1", str(first)
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        print(f"Error extracting first frame: {e.stderr.decode()}")
+        result = subprocess.run([
+            "ffmpeg", "-y", "-i", str(video), "-ss", "0", "-vframes", "1", str(first)
+        ], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Error extracting first frame: {result.stderr}")
+        else:
+            print(f"First frame extracted successfully: {first}")
+    except Exception as e:
+        print(f"Exception extracting first frame: {e}")
 
     # Last frame - use duration-based seeking
     duration = get_video_duration(str(video))
     
     if duration > 0:
-        # Seek to last frame (1 frame before end at 24fps = ~0.04s, use 0.05 for safety)
-        seek_time = max(0, duration - 0.05)
+        # Seek to near end of video
+        seek_time = max(0, duration - 0.1)
         try:
-            subprocess.run([
+            result = subprocess.run([
                 "ffmpeg", "-y", "-ss", str(seek_time), "-i", str(video), "-vframes", "1", str(last)
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as e:
-            print(f"Error extracting last frame (seek): {e.stderr.decode()}")
+            ], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Error extracting last frame: {result.stderr}")
+            else:
+                print(f"Last frame extracted successfully: {last}")
+        except Exception as e:
+            print(f"Exception extracting last frame: {e}")
     else:
-        # Fallback to old method if duration probe fails
+        # Fallback if duration probe fails
         try:
-            subprocess.run([
-                "ffmpeg", "-y", "-sseof", "-1", "-i", str(video), "-vframes", "1", str(last)
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as e:
-            print(f"Error extracting last frame (sseof): {e.stderr.decode()}")
+            result = subprocess.run([
+                "ffmpeg", "-y", "-sseof", "-0.5", "-i", str(video), "-vframes", "1", str(last)
+            ], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Error extracting last frame (fallback): {result.stderr}")
+        except Exception as e:
+            print(f"Exception extracting last frame (fallback): {e}")
 
     return str(first), str(last)
 

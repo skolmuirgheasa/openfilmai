@@ -81,20 +81,22 @@ This installs:
 
 ## Running the Application
 
-### Development Mode
+### Development Mode (One Command!)
 
-Run all services (backend, frontend, and Electron) simultaneously:
+Run the entire application with a single command:
 
 ```bash
 npm run dev
 ```
 
-This command will:
-1. Start the Python backend server on `http://127.0.0.1:8000`
-2. Start the Vite dev server for the frontend on `http://localhost:5173`
-3. Launch the Electron window once both servers are ready
+**That's it!** This single command starts everything:
+1. ✅ Python backend server on `http://127.0.0.1:8000`
+2. ✅ Vite frontend dev server on `http://localhost:5173`
+3. ✅ Electron desktop window (opens automatically when servers are ready)
 
 The app will automatically reload when you make code changes.
+
+> **Note:** You do NOT need to open multiple terminals. The `npm run dev` command uses `concurrently` to run all services together.
 
 ### Production Build
 

@@ -116,10 +116,11 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [settings, setSettings] = useState<any>({});
   const [customModels, setCustomModels] = useState<any[]>([]);
-  const [isAddCustomModelOpen, setIsAddCustomModelOpen] = useState<boolean>(false);
-  const [customModelInput, setCustomModelInput] = useState<string>('');
-  const [customModelFetching, setCustomModelFetching] = useState<boolean>(false);
-  const [customModelPreview, setCustomModelPreview] = useState<any>(null);
+  // Custom model state - disabled for v1
+  // const [isAddCustomModelOpen, setIsAddCustomModelOpen] = useState<boolean>(false);
+  // const [customModelInput, setCustomModelInput] = useState<string>('');
+  // const [customModelFetching, setCustomModelFetching] = useState<boolean>(false);
+  // const [customModelPreview, setCustomModelPreview] = useState<any>(null);
   const [isContPrevFrame, setIsContPrevFrame] = useState<boolean>(false);
   const [playIdx, setPlayIdx] = useState<number>(-1);
   const [provider, setProvider] = useState<'replicate' | 'vertex'>('replicate');
@@ -1284,52 +1285,22 @@ export default function App() {
                   </div>
                 </div>
                 
-                {/* Custom Replicate Models Section */}
-                <div className="mt-6 pt-4 border-t border-neutral-700">
+                {/* Custom Replicate Models Section - Coming Soon */}
+                <div className="mt-6 pt-4 border-t border-neutral-700 opacity-50">
                   <div className="flex items-center justify-between mb-3">
                     <div>
                       <h3 className="text-sm font-semibold">Custom Replicate Models</h3>
                       <p className="text-xs text-neutral-400 mt-1">Add your own Replicate models</p>
                     </div>
                     <button
-                      className="button-primary text-xs px-2 py-1"
-                      onClick={() => setIsAddCustomModelOpen(true)}
+                      className="button text-xs px-2 py-1 cursor-not-allowed"
+                      disabled
+                      title="Coming soon"
                     >
-                      + Add Model
+                      Coming Soon
                     </button>
                   </div>
-                  
-                  {customModels.length === 0 ? (
-                    <div className="text-xs text-neutral-500 italic">No custom models added yet.</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {customModels.map((model) => (
-                        <div key={model.model_id} className="flex items-center justify-between p-2 bg-neutral-900/50 rounded border border-neutral-800">
-                          <div className="flex-1">
-                            <div className="text-xs font-medium">{model.friendly_name}</div>
-                            <div className="text-[10px] text-neutral-500">{model.model_id}</div>
-                            <span className="inline-block mt-1 px-2 py-0.5 text-[9px] rounded-full bg-violet-500/20 text-violet-300">
-                              {model.model_type}
-                            </span>
-                          </div>
-                          <button
-                            className="button text-xs px-2 py-1 text-red-400 hover:text-red-300"
-                            onClick={async () => {
-                              if (confirm(`Delete custom model "${model.friendly_name}"?`)) {
-                                await fetch(`http://127.0.0.1:8000/settings/custom-models/${encodeURIComponent(model.model_id)}`, {
-                                  method: 'DELETE'
-                                });
-                                const cm = await fetch('http://127.0.0.1:8000/settings/custom-models').then((r) => r.json());
-                                setCustomModels(cm.models ?? []);
-                              }
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <div className="text-xs text-neutral-500 italic">Custom model support coming in future update.</div>
                 </div>
                 
                 <div className="mt-4 flex justify-end gap-2">
@@ -1354,189 +1325,7 @@ export default function App() {
             </Dialog.Portal>
           </Dialog.Root>
           
-          {/* Add Custom Model Dialog */}
-          <Dialog.Root open={isAddCustomModelOpen} onOpenChange={(open) => {
-            setIsAddCustomModelOpen(open);
-            if (!open) {
-              // Reset state when closing
-              setCustomModelInput('');
-              setCustomModelPreview(null);
-              setCustomModelFetching(false);
-            }
-          }}>
-            <Dialog.Portal>
-              <Dialog.Overlay className="fixed inset-0 bg-black/60" />
-              <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[560px] max-h-[80vh] overflow-y-auto card p-5">
-                <Dialog.Title className="text-sm font-semibold mb-2">Add Custom Replicate Model</Dialog.Title>
-                <Dialog.Description className="text-xs text-neutral-400 mb-4">
-                  Paste a Replicate model URL or ID to add it to your library.
-                </Dialog.Description>
-                
-                <div className="space-y-4">
-                  {/* Step 1: Input model ID */}
-                  <div>
-                    <label className="block text-xs text-neutral-400 mb-1">
-                      Replicate Model URL or ID
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        className="field flex-1"
-                        placeholder="e.g. owner/model-name or https://replicate.com/owner/model-name"
-                        value={customModelInput}
-                        onChange={(e) => setCustomModelInput(e.target.value)}
-                        disabled={customModelFetching || customModelPreview !== null}
-                      />
-                      {!customModelPreview && (
-                        <button
-                          className="button-primary"
-                          disabled={!customModelInput.trim() || customModelFetching}
-                          onClick={async () => {
-                            setCustomModelFetching(true);
-                            try {
-                              const response = await fetch('http://127.0.0.1:8000/replicate/fetch-schema', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ model_id: customModelInput })
-                              });
-                              const data = await response.json();
-                              
-                              if (data.status === 'ok') {
-                                setCustomModelPreview({
-                                  ...data,
-                                  friendly_name: data.model_id.split('/')[1] || data.model_id
-                                });
-                              } else {
-                                alert(`Error: ${data.detail || 'Failed to fetch schema'}`);
-                              }
-                            } catch (err) {
-                              alert(`Error: ${err}`);
-                            } finally {
-                              setCustomModelFetching(false);
-                            }
-                          }}
-                        >
-                          {customModelFetching ? 'Fetching...' : 'Fetch Schema'}
-                        </button>
-                      )}
-                      {customModelPreview && (
-                        <button
-                          className="button"
-                          onClick={() => {
-                            setCustomModelPreview(null);
-                            setCustomModelInput('');
-                          }}
-                        >
-                          Reset
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  
-                  {/* Step 2: Preview and configure */}
-                  {customModelPreview && (
-                    <div className="space-y-3 p-3 bg-neutral-900/50 rounded border border-neutral-800">
-                      <div>
-                        <div className="text-xs font-semibold text-green-400 mb-2">✓ Schema Fetched Successfully</div>
-                        <div className="text-[10px] text-neutral-400">
-                          Model ID: <span className="text-neutral-200">{customModelPreview.model_id}</span>
-                        </div>
-                        <div className="text-[10px] text-neutral-400 mt-1">
-                          Detected Type: <span className="inline-block px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300">
-                            {customModelPreview.model_type}
-                          </span>
-                        </div>
-                        {customModelPreview.model_type === 'unknown' && (
-                          <div className="text-[10px] text-yellow-400 mt-2">
-                            ⚠️ Could not auto-detect model type. Only image and video models are supported.
-                          </div>
-                        )}
-                      </div>
-                      
-                      <div>
-                        <label className="block text-xs text-neutral-400 mb-1">Friendly Name</label>
-                        <input
-                          className="field"
-                          value={customModelPreview.friendly_name}
-                          onChange={(e) => setCustomModelPreview({ ...customModelPreview, friendly_name: e.target.value })}
-                          placeholder="e.g. My Video Model"
-                        />
-                      </div>
-                      
-                      <div>
-                        <div className="text-xs text-neutral-400 mb-1">Parameters ({customModelPreview.parameters.length})</div>
-                        <div className="max-h-40 overflow-y-auto space-y-1">
-                          {customModelPreview.parameters.slice(0, 10).map((param: any) => (
-                            <div key={param.name} className="text-[10px] flex items-center gap-2 p-1 bg-neutral-900/70 rounded">
-                              <span className="font-mono text-violet-300">{param.name}</span>
-                              <span className="text-neutral-500">({param.type})</span>
-                              {param.required && <span className="text-red-400">*</span>}
-                            </div>
-                          ))}
-                          {customModelPreview.parameters.length > 10 && (
-                            <div className="text-[10px] text-neutral-500 italic">
-                              ... and {customModelPreview.parameters.length - 10} more
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                
-                <div className="mt-4 flex justify-end gap-2">
-                  <button
-                    className="button"
-                    onClick={() => {
-                      setIsAddCustomModelOpen(false);
-                      setCustomModelInput('');
-                      setCustomModelPreview(null);
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="button-primary"
-                    disabled={!customModelPreview || customModelPreview.model_type === 'unknown'}
-                    onClick={async () => {
-                      try {
-                        const response = await fetch('http://127.0.0.1:8000/settings/custom-models', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            model_id: customModelPreview.model_id,
-                            friendly_name: customModelPreview.friendly_name,
-                            model_type: customModelPreview.model_type,
-                            schema: customModelPreview.schema,
-                            parameters: customModelPreview.parameters
-                          })
-                        });
-                        const data = await response.json();
-                        
-                        if (data.status === 'ok') {
-                          // Reload custom models list
-                          const cm = await fetch('http://127.0.0.1:8000/settings/custom-models').then((r) => r.json());
-                          setCustomModels(cm.models ?? []);
-                          
-                          // Close dialog and reset
-                          setIsAddCustomModelOpen(false);
-                          setCustomModelInput('');
-                          setCustomModelPreview(null);
-                          
-                          alert(`✓ Model "${customModelPreview.friendly_name}" added successfully!`);
-                        } else {
-                          alert(`Error: ${data.detail || 'Failed to save model'}`);
-                        }
-                      } catch (err) {
-                        alert(`Error: ${err}`);
-                      }
-                    }}
-                  >
-                    Save Model
-                  </button>
-                </div>
-              </Dialog.Content>
-            </Dialog.Portal>
-          </Dialog.Root>
+          {/* Custom Model Dialog - Disabled for v1 */}
         </div>
       </div>
 
@@ -2308,7 +2097,7 @@ export default function App() {
                     )}
                     <div className="grid grid-cols-2 gap-3 mb-3">
                       <div>
-                        <label className="block text-xs text-neutral-400 mb-1">Character</label>
+                        <label className="block text-xs text-neutral-400 mb-1">Character (for consistency)</label>
                         <select className="field" value={selectedCharacterId ?? ''} onChange={(e) => setSelectedCharacterId(e.target.value || null)}>
                           <option value="">None</option>
                           {characters.map((c) => (
@@ -2317,10 +2106,15 @@ export default function App() {
                             </option>
                           ))}
                         </select>
+                        <div className="text-[10px] text-neutral-500 mt-1">Character's reference images will be used</div>
                       </div>
                       {selectedCharacter ? (
                         <div className="text-xs text-neutral-400 mt-6">
-                          Voice: {selectedCharacter.voice_id || 'unset'} {selectedCharacter.reference_image_ids?.length ? `• ${selectedCharacter.reference_image_ids.length} refs` : ''}
+                          {selectedCharacter.reference_image_ids?.length ? (
+                            <span className="text-green-400">✓ {selectedCharacter.reference_image_ids.length} reference image(s)</span>
+                          ) : (
+                            <span className="text-yellow-400">⚠ No reference images set</span>
+                          )}
                         </div>
                       ) : (
                         <div className="text-xs text-neutral-500 mt-6">No character selected</div>
@@ -2328,6 +2122,9 @@ export default function App() {
                     </div>
                     {genMediaType === 'video' ? (
                       <div className="space-y-3 mb-3">
+                        <div className="text-[10px] text-neutral-500 mb-2">
+                          <strong>Image Modes:</strong> "No images" = pure text prompt. "Start/End frames" = control the first and/or last frame of the video.
+                        </div>
                         <div className="flex items-center gap-4">
                           <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
                             <input
@@ -2444,9 +2241,9 @@ export default function App() {
                               )}
                             </div>
                             <label className="block text-xs text-neutral-400 mb-1 mt-3">OR extract from video's last frame</label>
-                            <div className="grid grid-cols-3 gap-2 max-h-[120px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
+                            <div className="grid grid-cols-2 gap-2 max-h-[120px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
                               {media.filter((m) => m.type === 'video').length === 0 ? (
-                                <div className="col-span-3 text-xs text-neutral-500 text-center py-2">No videos</div>
+                                <div className="col-span-2 text-xs text-neutral-500 text-center py-2">No videos</div>
                               ) : (
                                   media.filter((m) => m.type === 'video').map((m) => {
                                   const selected = vxStartFromVideoId === m.id;
@@ -2454,8 +2251,8 @@ export default function App() {
                                     <button
                                       key={m.id}
                                       disabled={vxUsePrevLast}
-                                      className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
-                                        selected ? 'border-violet-500 ring-2 ring-violet-500/50' : 'border-neutral-700 hover:border-violet-400'
+                                      className={`relative rounded overflow-hidden border-2 transition-all p-2 text-left ${
+                                        selected ? 'border-violet-500 bg-violet-500/20' : 'border-neutral-700 hover:border-violet-400 bg-neutral-800/50'
                                       } ${vxUsePrevLast ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
                                       onClick={() => {
                                         if (!vxUsePrevLast) {
@@ -2464,20 +2261,10 @@ export default function App() {
                                         }
                                       }}
                                     >
-                                      <video
-                                        src={`http://127.0.0.1:8000${m.url}`}
-                                        className="w-full h-full object-cover"
-                                        preload="metadata"
-                                      />
-                                      {selected ? (
-                                        <div className="absolute inset-0 bg-violet-500/20 flex items-center justify-center">
-                                          <div className="bg-violet-500 text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                                            ✓
-                                          </div>
-                                        </div>
-                                      ) : null}
-                                      <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-[8px] px-1 py-0.5 truncate opacity-0 group-hover:opacity-100 transition-opacity">
-                                        {m.id}
+                                      <div className="flex items-center gap-2">
+                                        <Video className="w-4 h-4 text-neutral-400 flex-shrink-0" />
+                                        <span className="text-[10px] text-neutral-300 truncate">{m.id}</span>
+                                        {selected && <span className="text-violet-400 ml-auto">✓</span>}
                                       </div>
                                     </button>
                                   );
@@ -2650,52 +2437,6 @@ export default function App() {
                         }
                       }}
                     />
-                    <label className="mt-3 inline-flex items-center gap-2 text-sm text-neutral-300 cursor-pointer">
-                      <input 
-                        type="checkbox" 
-                        checked={vxUsePrevLast} 
-                        onChange={async (e) => {
-                          const checked = e.target.checked;
-                          setVxUsePrevLast(checked);
-                          
-                          if (checked && vxImageMode === 'start_end') {
-                            // Auto-extract last frame from previous shot
-                            const shots = sceneDetail?.shots || [];
-                            if (shots.length > 0) {
-                              const lastShot = shots[shots.length - 1];
-                              if (lastShot.file_path) {
-                                try {
-                                  const r = await fetch('http://127.0.0.1:8000/frames/last', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ 
-                                      project_id: projectId, 
-                                      video_path: lastShot.file_path 
-                                    })
-                                  });
-                                  const d = await r.json();
-                                  if (d.status === 'ok') {
-                                    setVxStartFramePath(d.image_path);
-                                    // Clear conflicting selections
-                                    setVxStartImageId(null);
-                                    setVxStartFromVideoId(null);
-                                  } else {
-                                    alert(d.detail || 'Failed to extract last frame');
-                                  }
-                                } catch (e) {
-                                  console.error('Failed to extract frame:', e);
-                                }
-                              } else {
-                                alert('Previous shot has no video file');
-                              }
-                            } else {
-                              alert('No previous shot exists');
-                            }
-                          }
-                        }} 
-                      />
-                      Use previous shot's last frame as start
-                    </label>
                     <div className="mt-4 flex justify-end gap-2">
                       <Dialog.Close asChild>
                         <button className="button">Cancel</button>
@@ -3444,7 +3185,8 @@ export default function App() {
                 const videoRel = sh.file_path?.replace('project_data/', '');
                 const vidUrl = videoRel?.startsWith('project_data') ? `http://127.0.0.1:8000/files/${videoRel.replace('project_data/', '')}` : `http://127.0.0.1:8000/files/${videoRel ?? ''}`;
                 const duration = sh.duration ?? 8;
-                const widthPx = Math.max(140, duration * 18);
+                // Cap width at 300px max to prevent huge clips, min 140px
+                const widthPx = Math.min(300, Math.max(140, duration * 8));
                 const isLastShot = idx === (sceneDetail?.shots || []).length - 1;
                 const nextShot = !isLastShot ? (sceneDetail?.shots || [])[idx + 1] : null;
                 const contKey = nextShot ? `${sh.shot_id}_to_${nextShot.shot_id}` : null;
@@ -3519,8 +3261,15 @@ export default function App() {
                     }}
                   >
                     <div className="relative">
-                      <div className="aspect-video bg-black/60 overflow-hidden">
-                        {thumbUrl ? <img src={thumbUrl} className="w-full h-full object-cover" alt={`Shot ${idx + 1}`} /> : null}
+                      <div className="aspect-video bg-black/60 overflow-hidden flex items-center justify-center">
+                        {thumbUrl ? (
+                          <img src={thumbUrl} className="w-full h-full object-cover" alt={`Shot ${idx + 1}`} />
+                        ) : (
+                          <div className="text-neutral-600 text-[10px] text-center px-2">
+                            <Video className="w-6 h-6 mx-auto mb-1 opacity-40" />
+                            No preview
+                          </div>
+                        )}
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                           <Play className="w-8 h-8 text-white" />
                         </div>

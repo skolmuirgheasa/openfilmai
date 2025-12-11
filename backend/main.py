@@ -12,6 +12,12 @@ from urllib.parse import urlparse
 import threading
 import time
 import uuid
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 from backend.storage.files import (
     list_scenes,
     add_scene,
@@ -946,13 +952,23 @@ def api_add_shot(project_id: str, scene_id: str, body: ShotCreate):
                     first_frame = dirs["frames"] / f"{shot_id}_first.png"
                     last_frame = dirs["frames"] / f"{shot_id}_last.png"
                     
+                    logger.info(f"Extracting frames for {file_path} to {first_frame} and {last_frame}")
                     extract_first_last_frames(str(abs_path), str(first_frame), str(last_frame))
                     
-                    # Add frame paths to shot data
-                    rel_first = str(first_frame.relative_to(PROJECT_DATA_DIR))
-                    rel_last = str(last_frame.relative_to(PROJECT_DATA_DIR))
-                    shot_data['first_frame_path'] = f"project_data/{rel_first}"
-                    shot_data['last_frame_path'] = f"project_data/{rel_last}"
+                    # Verify extraction succeeded
+                    if first_frame.exists():
+                        rel_first = str(first_frame.relative_to(PROJECT_DATA_DIR))
+                        shot_data['first_frame_path'] = f"project_data/{rel_first}"
+                        logger.info(f"First frame extracted: {shot_data['first_frame_path']}")
+                    else:
+                        logger.warning(f"First frame extraction failed - file not created: {first_frame}")
+                    
+                    if last_frame.exists():
+                        rel_last = str(last_frame.relative_to(PROJECT_DATA_DIR))
+                        shot_data['last_frame_path'] = f"project_data/{rel_last}"
+                        logger.info(f"Last frame extracted: {shot_data['last_frame_path']}")
+                    else:
+                        logger.warning(f"Last frame extraction failed - file not created: {last_frame}")
                 
                 # 2. Probe and update duration
                 # Always probe to get accurate duration, overriding any default
