@@ -191,7 +191,45 @@ export default function App() {
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(new Set());
   const [showArchived, setShowArchived] = useState<boolean>(false);
   const [archivedMedia, setArchivedMedia] = useState<any[]>([]);
-  
+
+  // AI Shot Planner state
+  const [isAIPlannerOpen, setIsAIPlannerOpen] = useState<boolean>(false);
+  const [aiPlannerInput, setAIPlannerInput] = useState<string>('');
+  const [aiPlannerDialogue, setAIPlannerDialogue] = useState<string>('');
+  const [aiPlannerLoading, setAIPlannerLoading] = useState<boolean>(false);
+  const [aiPlannerApplying, setAIPlannerApplying] = useState<boolean>(false);
+  const [aiPlannerResult, setAIPlannerResult] = useState<any[]>([]);
+
+  // Scene context editing
+  const [isSceneContextOpen, setIsSceneContextOpen] = useState<boolean>(false);
+  const [sceneSetupStep, setSceneSetupStep] = useState<number>(1); // Wizard step
+  const [sceneDescription, setSceneDescription] = useState<string>('');
+  const [sceneLocationNotes, setSceneLocationNotes] = useState<string>('');
+  const [sceneMasterImageIds, setSceneMasterImageIds] = useState<string[]>([]);
+  const [sceneCast, setSceneCast] = useState<{character_id: string; appearance_notes: string}[]>([]);
+  const [sceneVisualStyle, setSceneVisualStyle] = useState<string>('');
+  const [sceneColorPalette, setSceneColorPalette] = useState<string>('');
+  const [sceneCameraStyle, setSceneCameraStyle] = useState<string>('');
+  const [sceneToneNotes, setSceneToneNotes] = useState<string>('');
+  const [sceneSetupComplete, setSceneSetupComplete] = useState<boolean>(false);
+
+  // Progressive consistency tracking
+  const [generatingForShotIdx, setGeneratingForShotIdx] = useState<number | null>(null);
+  const [autoInjectedRefs, setAutoInjectedRefs] = useState<{scene: string[]; character: string[]; continuity: string | null}>({scene: [], character: [], continuity: null});
+
+  // AI Scene Setup assistance
+  const [sceneAILoading, setSceneAILoading] = useState<boolean>(false);
+  const [sceneImageGenerating, setSceneImageGenerating] = useState<boolean>(false);
+  const [sceneAIProposal, setSceneAIProposal] = useState<any>(null);
+  const [sceneIncludeCharacters, setSceneIncludeCharacters] = useState<boolean>(false);
+  const [sceneImagePromptOverride, setSceneImagePromptOverride] = useState<string>('');
+  const [scenePendingImage, setScenePendingImage] = useState<string | null>(null); // Image awaiting accept/reject
+  const [sceneCharacterGenerating, setSceneCharacterGenerating] = useState<boolean>(false);
+  const [scenePendingCharacterImage, setScenePendingCharacterImage] = useState<string | null>(null);
+  const [sceneCharacterPrompt, setSceneCharacterPrompt] = useState<string>('');
+  const [sceneActiveCharacterId, setSceneActiveCharacterId] = useState<string | null>(null); // Which character we're generating for
+  const [sceneCharacterAILoading, setSceneCharacterAILoading] = useState<boolean>(false);
+
   // Auto-update voiceId when voiceCharacterId changes
   useEffect(() => {
     if (voiceCharacterId) {
@@ -385,6 +423,18 @@ export default function App() {
       if (!selectedSceneId) return;
       const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then((r) => r.json());
       setSceneDetail(d.scene ?? null);
+      // Load scene context fields
+      if (d.scene) {
+        setSceneDescription(d.scene.description ?? '');
+        setSceneLocationNotes(d.scene.location_notes ?? '');
+        setSceneMasterImageIds(d.scene.master_image_ids ?? []);
+        setSceneCast(d.scene.cast ?? []);
+        setSceneVisualStyle(d.scene.visual_style ?? '');
+        setSceneColorPalette(d.scene.color_palette ?? '');
+        setSceneCameraStyle(d.scene.camera_style ?? '');
+        setSceneToneNotes(d.scene.tone_notes ?? '');
+        setSceneSetupComplete(d.scene.setup_complete ?? false);
+      }
     }
     loadDetail();
   }, [selectedSceneId, projectId]);
@@ -1255,6 +1305,28 @@ export default function App() {
                   API keys and credentials (stored locally).
                 </Dialog.Description>
                 <div className="grid grid-cols-2 gap-3">
+                  {/* AI Cinematographer Section */}
+                  <div className="col-span-2 pb-3 border-b border-neutral-700">
+                    <div className="text-xs font-semibold text-violet-400 mb-2">AI Shot Planner</div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-neutral-400 mb-1">Anthropic API Key</label>
+                        <input className="field" type="password" placeholder="sk-ant-..." value={settings.anthropic_api_key ?? ''} onChange={(e) => setSettings((s: any) => ({ ...s, anthropic_api_key: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-neutral-400 mb-1">OpenAI API Key</label>
+                        <input className="field" type="password" placeholder="sk-..." value={settings.openai_api_key ?? ''} onChange={(e) => setSettings((s: any) => ({ ...s, openai_api_key: e.target.value }))} />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="block text-xs text-neutral-400 mb-1">Preferred LLM Provider</label>
+                        <select className="field" value={settings.llm_provider ?? 'anthropic'} onChange={(e) => setSettings((s: any) => ({ ...s, llm_provider: e.target.value }))}>
+                          <option value="anthropic">Anthropic (Claude)</option>
+                          <option value="openai">OpenAI (GPT-4)</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="col-span-2">
                     <label className="block text-xs text-neutral-400 mb-1">Replicate API Token</label>
                     <input className="field" value={settings.replicate_api_token ?? ''} onChange={(e) => setSettings((s: any) => ({ ...s, replicate_api_token: e.target.value }))} />
@@ -1963,6 +2035,10 @@ export default function App() {
                   if (open) {
                     const s = await fetch('http://127.0.0.1:8000/settings').then((r) => r.json()).catch(() => ({ settings: {} }));
                     setSettings(s.settings ?? {});
+                  } else {
+                    // Reset progressive consistency state when dialog closes
+                    setGeneratingForShotIdx(null);
+                    setAutoInjectedRefs({scene: [], character: [], continuity: null});
                   }
                 }}
               >
@@ -1978,6 +2054,42 @@ export default function App() {
                     <Dialog.Description className="text-xs text-neutral-400 mb-3">
                       Generate a shot (choose provider). Continuity option uses the last frame of the previous shot.
                     </Dialog.Description>
+                    {/* Progressive Consistency Info */}
+                    {generatingForShotIdx !== null && (autoInjectedRefs.scene.length > 0 || autoInjectedRefs.character.length > 0 || autoInjectedRefs.continuity) && (
+                      <div className="mb-4 p-3 bg-violet-500/10 border border-violet-500/30 rounded-lg">
+                        <div className="text-[11px] font-semibold text-violet-400 mb-2 flex items-center gap-2">
+                          <span>🎬</span> Progressive Consistency Active
+                          <span className="text-[9px] bg-violet-500/20 px-1.5 py-0.5 rounded text-violet-300">Shot {generatingForShotIdx + 1}</span>
+                        </div>
+                        <div className="space-y-1 text-[10px] text-neutral-400">
+                          {autoInjectedRefs.scene.length > 0 && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-neutral-500">Scene refs:</span>
+                              <span className="text-blue-400">{autoInjectedRefs.scene.length} image(s)</span>
+                              <span className="text-[9px] text-neutral-600">(master + wide shots)</span>
+                            </div>
+                          )}
+                          {autoInjectedRefs.character.length > 0 && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-neutral-500">Character refs:</span>
+                              <span className="text-amber-400">{autoInjectedRefs.character.length} reference(s)</span>
+                            </div>
+                          )}
+                          {autoInjectedRefs.continuity && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-neutral-500">Continuity frame:</span>
+                              <span className="text-green-400">✓ Using previous shot's frame</span>
+                            </div>
+                          )}
+                          {sceneVisualStyle && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-neutral-500">Style injected:</span>
+                              <span className="text-purple-400 truncate max-w-xs">{sceneVisualStyle.substring(0, 40)}...</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-3 mb-3">
                       <div>
                         <label className="block text-xs text-neutral-400 mb-1">Media Type</label>
@@ -3168,15 +3280,221 @@ export default function App() {
             </div>
           </div>
 
-          {/* Horizontal timeline at bottom */}
-          <div className="h-64 border-t border-neutral-800 bg-neutral-900/40 p-3 overflow-x-auto overflow-y-auto flex-shrink-0">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] uppercase tracking-wider text-neutral-500">Timeline • {(sceneDetail?.shots || []).length} shots</div>
-              {playError ? <div className="text-[10px] text-red-400">{playError}</div> : null}
+          {/* Scene-First Shot Planner */}
+          <div className="border-t border-neutral-800 bg-neutral-900/40 flex-shrink-0 overflow-hidden flex flex-col" style={{ minHeight: '350px', maxHeight: '55vh' }}>
+            {/* Scene Header */}
+            <div className="flex items-center justify-between px-4 py-2 bg-neutral-800/50 border-b border-neutral-700">
+              <div className="flex items-center gap-4">
+                <div className="text-xs font-semibold text-white">{sceneDetail?.title || 'Select a Scene'}</div>
+                {playError ? <div className="text-[10px] text-red-400">{playError}</div> : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  className="button text-[10px] px-2 py-1"
+                  onClick={async () => {
+                    if (!selectedSceneId) return;
+                    const res = await fetch(`http://127.0.0.1:8000/render/export-scene/${projectId}/${selectedSceneId}`, {
+                      method: 'POST'
+                    });
+                    const d = await res.json();
+                    if (d.status === 'ok') {
+                      alert(`Exported ${d.count} shots to ${d.export_dir}`);
+                    } else {
+                      alert(d.detail || 'Export failed');
+                    }
+                  }}
+                  title="Export all video-ready shots"
+                >
+                  Export Scene
+                </button>
+              </div>
             </div>
-            <div className="flex gap-1 items-start min-h-[200px]">
+
+            {/* Scene Setup Section - REQUIRED BEFORE SHOTS */}
+            <div className={`p-3 border-b ${sceneSetupComplete ? 'border-neutral-800 bg-gradient-to-r from-neutral-900/80 to-neutral-800/30' : 'border-amber-500/30 bg-gradient-to-r from-amber-900/20 to-amber-800/10'}`}>
+              <div className="flex items-start gap-4">
+                {/* Status Badge */}
+                <div className="flex-shrink-0">
+                  {sceneSetupComplete ? (
+                    <div className="w-10 h-10 rounded-full bg-green-500/20 border border-green-500/50 flex items-center justify-center">
+                      <span className="text-green-400 text-lg">✓</span>
+                    </div>
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-500/50 flex items-center justify-center">
+                      <span className="text-amber-400 text-lg">1</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Scene Description & Location */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="text-[10px] uppercase tracking-wider text-violet-400 font-semibold">
+                      {sceneSetupComplete ? 'Scene Setup' : 'Step 1: Scene Setup (Required)'}
+                    </div>
+                    {!sceneSetupComplete && (
+                      <span className="text-[9px] px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded animate-pulse">
+                        Complete setup before creating shots
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <div className="text-[9px] text-neutral-500 mb-1">Description</div>
+                      {sceneDescription ? (
+                        <div className="text-[10px] text-neutral-300 line-clamp-2">{sceneDescription}</div>
+                      ) : (
+                        <div className="text-[10px] text-amber-400/70 italic">Required</div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-neutral-500 mb-1">Location</div>
+                      {sceneLocationNotes ? (
+                        <div className="text-[10px] text-neutral-300 line-clamp-2">{sceneLocationNotes}</div>
+                      ) : (
+                        <div className="text-[10px] text-neutral-600 italic">Not set</div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-neutral-500 mb-1">Visual Style</div>
+                      {sceneVisualStyle ? (
+                        <div className="text-[10px] text-neutral-300 line-clamp-2">{sceneVisualStyle}</div>
+                      ) : (
+                        <div className="text-[10px] text-neutral-600 italic">Not set</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Scene Master Images */}
+                <div className="flex-shrink-0">
+                  <div className="text-[9px] text-neutral-500 mb-1">Setting Refs</div>
+                  <div className="flex gap-1">
+                    {sceneMasterImageIds.length > 0 ? (
+                      sceneMasterImageIds.slice(0, 3).map(imgId => {
+                        const img = media.find(m => m.id === imgId);
+                        return img ? (
+                          <div key={imgId} className="w-12 h-12 rounded border border-green-500/50 overflow-hidden">
+                            <img src={`http://127.0.0.1:8000${img.url}`} className="w-full h-full object-cover" />
+                          </div>
+                        ) : null;
+                      })
+                    ) : (
+                      <div className="w-12 h-12 rounded border-2 border-dashed border-amber-500/50 flex items-center justify-center text-amber-500/70">
+                        <Plus className="w-4 h-4" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Scene Cast */}
+                <div className="flex-shrink-0">
+                  <div className="text-[9px] text-neutral-500 mb-1">Cast ({sceneCast.length})</div>
+                  <div className="flex gap-1">
+                    {sceneCast.length > 0 ? (
+                      sceneCast.slice(0, 4).map((cast, idx) => {
+                        const char = characters.find(c => c.character_id === cast.character_id);
+                        const refImg = char?.reference_image_ids?.[0];
+                        const img = refImg ? media.find(m => m.id === refImg) : null;
+                        return (
+                          <div key={idx} className="text-center">
+                            <div className="w-10 h-10 rounded-full border border-violet-500/50 overflow-hidden bg-neutral-800 flex items-center justify-center">
+                              {img ? (
+                                <img src={`http://127.0.0.1:8000${img.url}`} className="w-full h-full object-cover" />
+                              ) : (
+                                <span className="text-[10px] text-neutral-500">{char?.name?.[0] || '?'}</span>
+                              )}
+                            </div>
+                            <div className="text-[8px] text-neutral-400 truncate w-10 mt-0.5">{char?.name || 'Unknown'}</div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="w-10 h-10 rounded-full border-2 border-dashed border-amber-500/50 flex items-center justify-center text-amber-500/70">
+                        <Plus className="w-3 h-3" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Edit Scene Setup Button */}
+                <div className="flex flex-col gap-1">
+                  <button
+                    className={`button text-[10px] px-3 py-1.5 ${sceneSetupComplete ? 'bg-violet-500/20 hover:bg-violet-500/30 text-violet-300' : 'bg-amber-500/30 hover:bg-amber-500/40 text-amber-200 font-semibold'}`}
+                    onClick={() => {
+                      setSceneSetupStep(1);
+                      setIsSceneContextOpen(true);
+                    }}
+                  >
+                    {sceneSetupComplete ? 'Edit Setup' : 'Complete Setup →'}
+                  </button>
+                  {sceneSetupComplete && (
+                    <button
+                      className="button text-[10px] px-3 py-1.5 bg-violet-500/20 hover:bg-violet-500/30 text-violet-300"
+                      onClick={() => setIsAIPlannerOpen(true)}
+                    >
+                      <Sparkles className="w-3 h-3 mr-1 inline" />
+                      AI Plan
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Shot List Header */}
+            <div className="flex items-center justify-between px-4 py-2 bg-neutral-900/60">
+              <div className="flex items-center gap-2">
+                {sceneSetupComplete ? (
+                  <div className="w-6 h-6 rounded-full bg-violet-500/20 border border-violet-500/50 flex items-center justify-center">
+                    <span className="text-violet-400 text-xs">2</span>
+                  </div>
+                ) : (
+                  <div className="w-6 h-6 rounded-full bg-neutral-700 border border-neutral-600 flex items-center justify-center">
+                    <span className="text-neutral-500 text-xs">2</span>
+                  </div>
+                )}
+                <div className={`text-[10px] uppercase tracking-wider ${sceneSetupComplete ? 'text-violet-400' : 'text-neutral-600'}`}>
+                  Shot List • {(sceneDetail?.shots || []).length} shots
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-[9px] text-neutral-500">
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500"></span> Image</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> Audio</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500"></span> Video</span>
+              </div>
+            </div>
+
+            {/* Blocked message if setup not complete */}
+            {!sceneSetupComplete && selectedSceneId && (
+              <div className="flex-1 flex items-center justify-center p-8 bg-neutral-900/30">
+                <div className="text-center max-w-md">
+                  <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-amber-500/10 border-2 border-dashed border-amber-500/30 flex items-center justify-center">
+                    <span className="text-3xl">🎬</span>
+                  </div>
+                  <div className="text-sm font-medium text-neutral-300 mb-2">Complete Scene Setup First</div>
+                  <div className="text-xs text-neutral-500 mb-4">
+                    Before creating shots, you need to define the scene's characters, setting, and visual style.
+                    This ensures consistency across all shots in the scene.
+                  </div>
+                  <button
+                    className="button bg-amber-500/30 hover:bg-amber-500/40 text-amber-200 px-4 py-2"
+                    onClick={() => {
+                      setSceneSetupStep(1);
+                      setIsSceneContextOpen(true);
+                    }}
+                  >
+                    Complete Scene Setup →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Scrollable Shot Cards - only show when setup complete */}
+            {sceneSetupComplete && (
+            <div className="flex-1 overflow-x-auto overflow-y-auto p-3">
+              <div className="flex gap-2 items-start min-h-[180px]">
               {(sceneDetail?.shots || []).map((sh: any, idx: number) => {
-                const thumbPath = sh.first_frame_path?.replace('project_data/', '');
+                const thumbPath = sh.first_frame_path?.replace('project_data/', '') || sh.start_frame_path?.replace('project_data/', '');
                 const thumbUrl = thumbPath ? `http://127.0.0.1:8000/files/${thumbPath}` : null;
                 // Debug: log if thumbnail is missing
                 if (!thumbUrl && sh.shot_id) {
@@ -3260,6 +3578,22 @@ export default function App() {
                       setShowInspector(true);
                     }}
                   >
+                    {/* Shot Card Header with Status */}
+                    <div className="flex items-center justify-between px-2 py-1 bg-neutral-800/50 border-b border-neutral-700">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-white">{idx + 1}</span>
+                        {sh.camera_angle && (
+                          <span className="text-[9px] bg-violet-500/30 text-violet-300 px-1.5 py-0.5 rounded">{sh.camera_angle}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {/* Status indicators */}
+                        <span className={`w-2 h-2 rounded-full ${sh.start_frame_path || sh.first_frame_path ? 'bg-blue-500' : 'bg-neutral-600'}`} title={sh.start_frame_path || sh.first_frame_path ? 'Image ready' : 'No image'} />
+                        <span className={`w-2 h-2 rounded-full ${sh.audio_path ? 'bg-yellow-500' : 'bg-neutral-600'}`} title={sh.audio_path ? 'Audio ready' : 'No audio'} />
+                        <span className={`w-2 h-2 rounded-full ${sh.file_path ? 'bg-green-500' : 'bg-neutral-600'}`} title={sh.file_path ? 'Video ready' : 'No video'} />
+                      </div>
+                    </div>
+
                     <div className="relative">
                       <div className="aspect-video bg-black/60 overflow-hidden flex items-center justify-center">
                         {thumbUrl ? (
@@ -3267,18 +3601,17 @@ export default function App() {
                         ) : (
                           <div className="text-neutral-600 text-[10px] text-center px-2">
                             <Video className="w-6 h-6 mx-auto mb-1 opacity-40" />
-                            No preview
+                            {sh.action ? sh.action.substring(0, 30) + '...' : 'No preview'}
                           </div>
                         )}
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <Play className="w-8 h-8 text-white" />
-                        </div>
+                        {sh.file_path && (
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <Play className="w-8 h-8 text-white" />
+                          </div>
+                        )}
                       </div>
-                      <div className="absolute top-1 left-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded">
-                        {idx + 1}
-                      </div>
-                      <div className="absolute top-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded" title={sh.duration ? 'Actual duration' : 'Default duration (unknown)'}>
-                        {sh.duration ? `${sh.duration}s` : '8s?'}
+                      <div className="absolute top-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded" title={sh.duration ? 'Duration' : 'Target duration'}>
+                        {sh.duration ? `${sh.duration}s` : '5s'}
                       </div>
                       {sh.file_path && (
                         <button
@@ -3301,46 +3634,244 @@ export default function App() {
                         </button>
                       )}
                     </div>
+
+                    {/* Shot Info */}
                     <div className="p-2 space-y-1">
-                      <div className="text-[10px] text-neutral-400 truncate max-w-full" title={sh.shot_id}>{sh.shot_id}</div>
-                      <div className="flex gap-1 flex-wrap">
+                      {sh.subject && (
+                        <div className="text-[10px] text-neutral-300 font-medium truncate" title={sh.subject}>{sh.subject}</div>
+                      )}
+                      {sh.action && (
+                        <div className="text-[9px] text-neutral-500 line-clamp-2" title={sh.action}>{sh.action}</div>
+                      )}
+                      {sh.dialogue && (
+                        <div className="text-[9px] text-amber-400/80 italic truncate" title={sh.dialogue}>"{sh.dialogue}"</div>
+                      )}
+                      {/* Characters in shot indicator */}
+                      {sh.characters_in_shot && sh.characters_in_shot.length > 0 && (
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {sh.characters_in_shot.map((charId: string) => {
+                            const char = characters.find(c => c.character_id === charId);
+                            return char ? (
+                              <span key={charId} className="text-[8px] bg-blue-500/20 text-blue-300 px-1 py-0.5 rounded" title={`${char.name} - refs will be auto-injected`}>
+                                👤 {char.name.split(' ')[0]}
+                              </span>
+                            ) : null;
+                          })}
+                        </div>
+                      )}
+
+                      {/* Generation Pipeline Buttons */}
+                      <div className="flex gap-1 flex-wrap pt-1 border-t border-neutral-800 mt-1">
+                        {/* Gen Image Button */}
                         <button
-                          className="button text-[9px] px-1.5 py-0.5 flex-1"
+                          className={`text-[8px] px-1.5 py-0.5 rounded flex-1 ${sh.start_frame_path || sh.first_frame_path ? 'bg-blue-500/20 text-blue-300' : 'bg-neutral-700 text-neutral-300 hover:bg-violet-500/30'}`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            setIsVoiceOpen(true);
-                            setVoiceOutputName(`${sh.shot_id}_voice`);
-                          }}
-                        >
-                          Voice
-                        </button>
-                        <button
-                          className="button text-[9px] px-1.5 py-0.5 flex-1"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            // Pre-select this video for lip-sync
-                            // Match by path (exact or normalized)
-                            const videoId = media.find(m => {
-                              const mPath = m.path?.replace('project_data/', '');
-                              const shPath = sh.file_path?.replace('project_data/', '');
-                              return mPath === shPath || m.path === sh.file_path;
-                            })?.id;
-                            console.log('Lip button clicked for shot:', sh.shot_id, 'file_path:', sh.file_path, 'found videoId:', videoId, 'media:', media.map(m => ({ id: m.id, path: m.path })));
-                            if (videoId) {
-                              setLipMode('video');
-                              setLipVideoId(videoId);
+                            // Progressive consistency: auto-inject scene and character refs
+                            setGeneratingForShotIdx(idx);
+
+                            // Build enhanced prompt with scene visual style
+                            const styleNotes = [
+                              sceneVisualStyle && `Visual style: ${sceneVisualStyle}`,
+                              sceneColorPalette && `Color palette: ${sceneColorPalette}`,
+                              sceneCameraStyle && `Camera: ${sceneCameraStyle}`,
+                              sceneToneNotes && `Tone: ${sceneToneNotes}`,
+                            ].filter(Boolean).join('. ');
+                            const basePrompt = sh.prompt || sh.action || '';
+                            const enhancedPrompt = styleNotes ? `${basePrompt}\n\n${styleNotes}` : basePrompt;
+                            setGenPrompt(enhancedPrompt);
+
+                            // Collect auto-injected references
+                            const sceneRefs = sceneMasterImageIds || [];
+                            const charRefs: string[] = [];
+                            const charsInShot = sh.characters_in_shot || [];
+                            for (const charId of charsInShot) {
+                              // First check for scene-specific refs (character appearance for THIS scene)
+                              const castMember = sceneCast?.find(c => c.character_id === charId);
+                              if (castMember?.scene_reference_ids?.length) {
+                                charRefs.push(...castMember.scene_reference_ids);
+                              } else {
+                                // Fall back to global character refs
+                                const char = characters.find(c => c.character_id === charId);
+                                if (char?.reference_image_ids) {
+                                  charRefs.push(...char.reference_image_ids);
+                                }
+                              }
                             }
-                            setIsLipOpen(true);
-                            setLipOutputName(`${sh.shot_id}_lipsync`);
+
+                            // Find recent wide/establishing shots for consistency
+                            const wideRefs: string[] = [];
+                            const shots = sceneDetail?.shots || [];
+                            for (let i = 0; i < idx; i++) {
+                              const prevShot = shots[i];
+                              const isWide = prevShot?.camera_angle && (
+                                prevShot.camera_angle.toLowerCase().includes('wide') ||
+                                prevShot.camera_angle.toLowerCase().includes('establishing') ||
+                                prevShot.camera_angle.toLowerCase().includes('extreme wide')
+                              );
+                              if (isWide && (prevShot.start_frame_path || prevShot.first_frame_path)) {
+                                // Find the media ID for this frame
+                                const framePath = prevShot.start_frame_path || prevShot.first_frame_path;
+                                const mediaItem = media.find(m => m.path?.includes(framePath?.replace('project_data/', '')));
+                                if (mediaItem?.id) {
+                                  wideRefs.push(mediaItem.id);
+                                }
+                              }
+                            }
+
+                            // Get continuity frame from previous shot (if exists)
+                            let continuityFrame: string | null = null;
+                            if (idx > 0) {
+                              const prevShot = (sceneDetail?.shots || [])[idx - 1];
+                              if (prevShot?.last_frame_path || prevShot?.start_frame_path || prevShot?.first_frame_path) {
+                                continuityFrame = prevShot.last_frame_path || prevShot.start_frame_path || prevShot.first_frame_path;
+                              }
+                            }
+
+                            // Store auto-injected refs for display (include wide refs count)
+                            setAutoInjectedRefs({
+                              scene: [...sceneRefs, ...wideRefs],
+                              character: charRefs,
+                              continuity: continuityFrame
+                            });
+
+                            // Auto-select reference images (scene master + character refs + wide shots)
+                            const allRefs = [...new Set([...sceneRefs, ...charRefs, ...wideRefs])];
+                            setReplicateRefImages(allRefs);
+
+                            setGenMediaType('image');
+                            setIsGenOpen(true);
                           }}
+                          title={sh.start_frame_path || sh.first_frame_path ? 'Regenerate image' : 'Generate start frame'}
                         >
-                          Lip
+                          {sh.start_frame_path || sh.first_frame_path ? '✓ Image' : 'Gen Image'}
                         </button>
+
+                        {/* Gen Audio Button */}
                         <button
-                          className="button text-[9px] px-1.5 py-0.5 text-red-400"
+                          className={`text-[8px] px-1.5 py-0.5 rounded flex-1 ${sh.audio_path ? 'bg-yellow-500/20 text-yellow-300' : 'bg-neutral-700 text-neutral-300 hover:bg-violet-500/30'}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setVoiceText(sh.dialogue || '');
+                            setVoiceOutputName(`${sh.shot_id}_voice`);
+                            setIsVoiceOpen(true);
+                          }}
+                          title={sh.audio_path ? 'Regenerate audio' : 'Generate dialogue audio'}
+                        >
+                          {sh.audio_path ? '✓ Audio' : 'Gen Audio'}
+                        </button>
+
+                        {/* Gen Video / Lip Sync Button */}
+                        <button
+                          className={`text-[8px] px-1.5 py-0.5 rounded flex-1 ${sh.file_path ? 'bg-green-500/20 text-green-300' : 'bg-neutral-700 text-neutral-300 hover:bg-violet-500/30'}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // If we have both image and audio, suggest lip sync
+                            if ((sh.start_frame_path || sh.first_frame_path) && sh.audio_path) {
+                              // Find the image in media
+                              const imagePath = sh.start_frame_path || sh.first_frame_path;
+                              const imageId = media.find(m => m.path?.includes(imagePath?.replace('project_data/', '')))?.id;
+                              if (imageId) {
+                                setLipMode('image');
+                                setLipImageId(imageId);
+                              }
+                              // Find audio
+                              const audioId = media.find(m => m.path?.includes(sh.audio_path?.replace('project_data/', '')))?.id;
+                              if (audioId) {
+                                setLipAudioId(audioId);
+                              }
+                              setLipOutputName(`${sh.shot_id}_lipsync`);
+                              setIsLipOpen(true);
+                            } else {
+                              // Video generation with progressive consistency
+                              setGeneratingForShotIdx(idx);
+
+                              // Build enhanced prompt with scene visual style
+                              const styleNotes = [
+                                sceneVisualStyle && `Visual style: ${sceneVisualStyle}`,
+                                sceneColorPalette && `Color palette: ${sceneColorPalette}`,
+                                sceneCameraStyle && `Camera: ${sceneCameraStyle}`,
+                                sceneToneNotes && `Tone: ${sceneToneNotes}`,
+                              ].filter(Boolean).join('. ');
+                              const basePrompt = sh.prompt || sh.action || '';
+                              const enhancedPrompt = styleNotes ? `${basePrompt}\n\n${styleNotes}` : basePrompt;
+                              setGenPrompt(enhancedPrompt);
+
+                              // Collect auto-injected references
+                              const sceneRefs = sceneMasterImageIds || [];
+                              const charRefs: string[] = [];
+                              const charsInShot = sh.characters_in_shot || [];
+                              for (const charId of charsInShot) {
+                                // First check for scene-specific refs (character appearance for THIS scene)
+                                const castMember = sceneCast?.find(c => c.character_id === charId);
+                                if (castMember?.scene_reference_ids?.length) {
+                                  charRefs.push(...castMember.scene_reference_ids);
+                                } else {
+                                  // Fall back to global character refs
+                                  const char = characters.find(c => c.character_id === charId);
+                                  if (char?.reference_image_ids) {
+                                    charRefs.push(...char.reference_image_ids);
+                                  }
+                                }
+                              }
+
+                              // Find recent wide/establishing shots for consistency
+                              const wideRefs: string[] = [];
+                              const shots = sceneDetail?.shots || [];
+                              for (let i = 0; i < idx; i++) {
+                                const prevShot = shots[i];
+                                const isWide = prevShot?.camera_angle && (
+                                  prevShot.camera_angle.toLowerCase().includes('wide') ||
+                                  prevShot.camera_angle.toLowerCase().includes('establishing') ||
+                                  prevShot.camera_angle.toLowerCase().includes('extreme wide')
+                                );
+                                if (isWide && (prevShot.start_frame_path || prevShot.first_frame_path)) {
+                                  const framePath = prevShot.start_frame_path || prevShot.first_frame_path;
+                                  const mediaItem = media.find(m => m.path?.includes(framePath?.replace('project_data/', '')));
+                                  if (mediaItem?.id) {
+                                    wideRefs.push(mediaItem.id);
+                                  }
+                                }
+                              }
+
+                              // Get continuity frame: use shot's own start frame if available, else previous shot's last frame
+                              let continuityFrame: string | null = null;
+                              if (sh.start_frame_path || sh.first_frame_path) {
+                                continuityFrame = sh.start_frame_path || sh.first_frame_path;
+                              } else if (idx > 0) {
+                                const prevShot = (sceneDetail?.shots || [])[idx - 1];
+                                if (prevShot?.last_frame_path || prevShot?.start_frame_path || prevShot?.first_frame_path) {
+                                  continuityFrame = prevShot.last_frame_path || prevShot.start_frame_path || prevShot.first_frame_path;
+                                }
+                              }
+
+                              // Store auto-injected refs for display (include wide refs)
+                              setAutoInjectedRefs({
+                                scene: [...sceneRefs, ...wideRefs],
+                                character: charRefs,
+                                continuity: continuityFrame
+                              });
+
+                              setGenMediaType('video');
+                              // Use the shot's start frame, or fallback to continuity frame
+                              if (continuityFrame) {
+                                setVxImageMode('start_end');
+                                setVxStartFramePath(continuityFrame);
+                              }
+                              setIsGenOpen(true);
+                            }
+                          }}
+                          title={sh.file_path ? 'Regenerate video' : (sh.audio_path ? 'Generate lip sync' : 'Generate video')}
+                        >
+                          {sh.file_path ? '✓ Video' : (sh.audio_path ? 'Lip Sync' : 'Gen Video')}
+                        </button>
+
+                        {/* Delete */}
+                        <button
+                          className="text-[8px] px-1 py-0.5 rounded bg-neutral-700 text-red-400 hover:bg-red-500/30"
                           onClick={async (e) => {
                             e.stopPropagation();
-                            if (!confirm('Delete?')) return;
+                            if (!confirm('Delete shot?')) return;
                             await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${sh.shot_id}`, {
                               method: 'DELETE'
                             });
@@ -3348,6 +3879,7 @@ export default function App() {
                             setSceneDetail(d.scene ?? null);
                             await refreshMedia();
                           }}
+                          title="Delete shot"
                         >
                           ×
                         </button>
@@ -3570,12 +4102,49 @@ export default function App() {
                 </div>
               ) : null}
               
-              {(sceneDetail?.shots || []).length === 0 ? (
-                <div className="flex-1 grid place-items-center text-neutral-600 text-xs">
-                  No shots yet. Click "Generate Shot" above to start.
+              {/* Add Shot Card */}
+              {selectedSceneId && (
+                <div
+                  className="flex-shrink-0 w-[200px] h-[180px] rounded-lg border-2 border-dashed border-neutral-700 bg-neutral-900/30 flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-violet-500/50 hover:bg-violet-500/5 transition-all"
+                  onClick={() => setIsAIPlannerOpen(true)}
+                >
+                  <Sparkles className="w-8 h-8 text-neutral-600" />
+                  <div className="text-[11px] text-neutral-500 text-center px-4">
+                    Use AI Planner to<br/>generate shot list
+                  </div>
+                  <button
+                    className="button text-[10px] px-3 py-1 mt-1"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // Add a blank shot manually
+                      const shotId = `shot_${Date.now()}`;
+                      fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          shot_id: shotId,
+                          status: 'planned'
+                        })
+                      }).then(() => {
+                        fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`)
+                          .then(r => r.json())
+                          .then(d => setSceneDetail(d.scene ?? null));
+                      });
+                    }}
+                  >
+                    + Add Manual
+                  </button>
                 </div>
-              ) : null}
+              )}
+
+              {(sceneDetail?.shots || []).length === 0 && !selectedSceneId && (
+                <div className="flex-1 grid place-items-center text-neutral-600 text-xs">
+                  Select a scene to start planning shots.
+                </div>
+              )}
+              </div>
             </div>
+            )}
           </div>
         </main>
 
@@ -3764,6 +4333,1115 @@ export default function App() {
               </button>
             </div>
             
+            <div className="mt-4 flex justify-end">
+              <Dialog.Close asChild>
+                <button className="button">Close</button>
+              </Dialog.Close>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* Scene Setup Wizard Modal */}
+      <Dialog.Root open={isSceneContextOpen} onOpenChange={(open) => {
+        setIsSceneContextOpen(open);
+        if (!open) {
+          // Reset proposal state when dialog closes
+          setSceneAIProposal(null);
+          setSceneImagePromptOverride('');
+          setSceneIncludeCharacters(false);
+          setScenePendingImage(null);
+          setScenePendingCharacterImage(null);
+          setSceneCharacterPrompt('');
+          setSceneActiveCharacterId(null);
+        }
+      }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] max-h-[90vh] card p-5 overflow-y-auto">
+            <Dialog.Title className="text-sm font-semibold mb-2">
+              {sceneSetupComplete ? 'Edit Scene Setup' : 'Scene Setup Wizard'}
+            </Dialog.Title>
+
+            {/* Progress Steps */}
+            <div className="flex items-center gap-2 mb-6">
+              <div className={`flex items-center gap-2 ${sceneSetupStep >= 1 ? 'text-violet-400' : 'text-neutral-500'}`}>
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${sceneSetupStep >= 1 ? 'bg-violet-500/30 border border-violet-500' : 'bg-neutral-700 border border-neutral-600'}`}>1</div>
+                <span className="text-xs">Characters & Setting</span>
+              </div>
+              <div className="flex-1 h-px bg-neutral-700"></div>
+              <div className={`flex items-center gap-2 ${sceneSetupStep >= 2 ? 'text-violet-400' : 'text-neutral-500'}`}>
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${sceneSetupStep >= 2 ? 'bg-violet-500/30 border border-violet-500' : 'bg-neutral-700 border border-neutral-600'}`}>2</div>
+                <span className="text-xs">Visual Style</span>
+              </div>
+              <div className="flex-1 h-px bg-neutral-700"></div>
+              <div className={`flex items-center gap-2 ${sceneSetupStep >= 3 ? 'text-green-400' : 'text-neutral-500'}`}>
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${sceneSetupStep >= 3 ? 'bg-green-500/30 border border-green-500' : 'bg-neutral-700 border border-neutral-600'}`}>✓</div>
+                <span className="text-xs">Complete</span>
+              </div>
+            </div>
+
+            {/* Step 1: Characters & Setting */}
+            {sceneSetupStep === 1 && (
+              <div className="space-y-4">
+                <div className="text-xs text-neutral-400 mb-2">
+                  Define who's in this scene and where it takes place. This information will be used for all shots.
+                </div>
+
+                {/* AI Assist Banner */}
+                <div className="p-3 bg-gradient-to-r from-violet-500/10 to-purple-500/10 border border-violet-500/30 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-medium text-violet-300 flex items-center gap-2">
+                        <Sparkles className="w-4 h-4" /> AI Scene Assistant
+                      </div>
+                      <div className="text-[10px] text-neutral-400 mt-1">
+                        Enter a scene description, then click "AI Assist" to get a scene setting proposal you can review and refine.
+                      </div>
+                    </div>
+                    <button
+                      className="button bg-violet-500/30 hover:bg-violet-500/40 text-violet-200 px-4 py-2 flex items-center gap-2"
+                      disabled={!sceneDescription.trim() || sceneAILoading}
+                      onClick={async () => {
+                        if (!sceneDescription.trim()) return;
+                        setSceneAILoading(true);
+                        setSceneAIProposal(null);
+                        try {
+                          // Include both all project characters AND any already cast in scene
+                          const castCharNames = sceneCast.map(sc => {
+                            const char = characters.find(c => c.character_id === sc.character_id);
+                            return char?.name;
+                          }).filter(Boolean);
+                          const allCharNames = characters.map(c => c.name);
+                          // Prioritize cast characters in the list so AI focuses on them
+                          const charNamesForAI = [...new Set([...castCharNames, ...allCharNames])];
+
+                          const res = await fetch('http://127.0.0.1:8000/ai/analyze-scene', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              scene_description: sceneDescription,
+                              location_notes: sceneLocationNotes,
+                              existing_characters: charNamesForAI,
+                              cast_characters: castCharNames // Characters definitely in this scene
+                            })
+                          });
+                          const data = await res.json();
+                          if (data.status === 'ok' && data.analysis) {
+                            const a = data.analysis;
+                            // Store the full proposal for review
+                            setSceneAIProposal(a);
+
+                            // Auto-fill visual style fields
+                            if (a.visual_style) setSceneVisualStyle(a.visual_style);
+                            if (a.color_palette) setSceneColorPalette(a.color_palette);
+                            if (a.camera_style) setSceneCameraStyle(a.camera_style);
+                            if (a.tone_notes) setSceneToneNotes(a.tone_notes);
+
+                            // Helper to find character appearance from AI response
+                            const findCharAppearance = (charName: string) => {
+                              const appearances = a.character_appearances || {};
+                              return appearances[charName] ||
+                                Object.entries(appearances).find(([name]) =>
+                                  name.toLowerCase() === charName.toLowerCase() ||
+                                  name.toLowerCase().includes(charName.toLowerCase()) ||
+                                  charName.toLowerCase().includes(name.toLowerCase())
+                                )?.[1];
+                            };
+
+                            // Start with current cast
+                            const newCast = [...sceneCast];
+
+                            // First: Update ALL existing cast members with AI appearances
+                            for (let i = 0; i < newCast.length; i++) {
+                              const castMember = newCast[i];
+                              const char = characters.find(c => c.character_id === castMember.character_id);
+                              if (char) {
+                                const charAppearance = findCharAppearance(char.name) as any;
+                                if (charAppearance) {
+                                  const appearanceNotes = `${charAppearance.appearance_notes || ''} ${charAppearance.wardrobe || ''}`.trim();
+                                  if (appearanceNotes) {
+                                    newCast[i] = { ...newCast[i], appearance_notes: appearanceNotes };
+                                  }
+                                }
+                              }
+                            }
+
+                            // Second: Add any suggested characters not already in cast
+                            if (a.suggested_characters && a.suggested_characters.length > 0) {
+                              for (const suggestedName of a.suggested_characters) {
+                                const matchingChar = characters.find(c =>
+                                  c.name.toLowerCase().includes(suggestedName.toLowerCase()) ||
+                                  suggestedName.toLowerCase().includes(c.name.toLowerCase())
+                                );
+                                if (matchingChar && !newCast.find(c => c.character_id === matchingChar.character_id)) {
+                                  const charAppearance = findCharAppearance(suggestedName) as any;
+                                  const appearanceNotes = charAppearance
+                                    ? `${charAppearance.appearance_notes || ''} ${charAppearance.wardrobe || ''}`.trim()
+                                    : '';
+                                  newCast.push({ character_id: matchingChar.character_id, appearance_notes: appearanceNotes });
+                                }
+                              }
+                            }
+
+                            setSceneCast(newCast);
+
+                            // Set the establishing shot prompt for editing
+                            const defaultPrompt = a.establishing_shot_prompt || a.setting_image_prompt || '';
+                            setSceneImagePromptOverride(defaultPrompt);
+                          } else {
+                            alert(data.detail || 'AI analysis failed');
+                          }
+                        } catch (err: any) {
+                          alert('AI analysis error: ' + (err?.message || err));
+                        } finally {
+                          setSceneAILoading(false);
+                        }
+                      }}
+                    >
+                      {sceneAILoading ? '⏳ Analyzing...' : '✨ AI Assist'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Scene Description */}
+                <div>
+                  <label className="block text-xs text-neutral-400 mb-1">Scene Description <span className="text-amber-400">*</span></label>
+                  <textarea
+                    className="field h-20"
+                    placeholder="What happens in this scene? (e.g., 'Jonas confronts Maria in the abandoned warehouse about the missing money.')"
+                    value={sceneDescription}
+                    onChange={(e) => setSceneDescription(e.target.value)}
+                  />
+                </div>
+
+                {/* Location Notes */}
+                <div>
+                  <label className="block text-xs text-neutral-400 mb-1">Location Description</label>
+                  <textarea
+                    className="field h-16"
+                    placeholder="Where does this scene take place? (e.g., 'Interior, abandoned warehouse, night. Moonlight through broken windows.')"
+                    value={sceneLocationNotes}
+                    onChange={(e) => setSceneLocationNotes(e.target.value)}
+                  />
+                </div>
+
+                {/* Cast in Scene */}
+                <div>
+                  <label className="block text-xs text-neutral-400 mb-1">Characters in This Scene <span className="text-amber-400">*</span></label>
+                  <p className="text-[10px] text-neutral-500 mb-2">Who appears in this scene? Add scene-specific appearance notes.</p>
+                  <div className="space-y-2 max-h-[200px] overflow-y-auto">
+                    {sceneCast.map((cast, idx) => {
+                      const char = characters.find(c => c.character_id === cast.character_id);
+                      const refImg = char?.reference_image_ids?.[0];
+                      const img = refImg ? media.find(m => m.id === refImg) : null;
+                      return (
+                        <div key={idx} className="flex items-center gap-2 p-2 bg-neutral-800/50 rounded">
+                          {img && (
+                            <div className="w-10 h-10 rounded-full overflow-hidden flex-shrink-0">
+                              <img src={`http://127.0.0.1:8000${img.url}`} className="w-full h-full object-cover" />
+                            </div>
+                          )}
+                          <select
+                            className="field flex-1"
+                            value={cast.character_id}
+                            onChange={(e) => {
+                              const newCast = [...sceneCast];
+                              newCast[idx].character_id = e.target.value;
+                              setSceneCast(newCast);
+                            }}
+                          >
+                            <option value="">Select character...</option>
+                            {characters.map(c => (
+                              <option key={c.character_id} value={c.character_id}>{c.name}</option>
+                            ))}
+                          </select>
+                          <input
+                            className="field flex-1"
+                            placeholder="Scene appearance (e.g., 'muddy clothes, tired')"
+                            value={cast.appearance_notes}
+                            onChange={(e) => {
+                              const newCast = [...sceneCast];
+                              newCast[idx].appearance_notes = e.target.value;
+                              setSceneCast(newCast);
+                            }}
+                          />
+                          <button
+                            className="button text-red-400 px-2"
+                            onClick={() => setSceneCast(sceneCast.filter((_, i) => i !== idx))}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <button
+                      className="button text-xs w-full"
+                      onClick={() => setSceneCast([...sceneCast, { character_id: '', appearance_notes: '' }])}
+                    >
+                      + Add Character to Scene
+                    </button>
+                  </div>
+                </div>
+
+                {/* AI Scene Proposal - shown after AI analysis */}
+                {sceneAIProposal && (
+                  <div className="p-4 bg-gradient-to-b from-blue-500/10 to-purple-500/10 border border-blue-500/30 rounded-lg space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold text-blue-300 flex items-center gap-2">
+                        🎬 AI Scene Setting Proposal
+                      </div>
+                      <button
+                        className="text-[10px] text-neutral-500 hover:text-red-400"
+                        onClick={() => setSceneAIProposal(null)}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+
+                    {/* Scene Setting Details */}
+                    {sceneAIProposal.scene_setting_proposal && (
+                      <div className="grid grid-cols-2 gap-2 text-[10px]">
+                        <div className="bg-neutral-800/50 p-2 rounded">
+                          <span className="text-neutral-500">Location:</span>
+                          <div className="text-neutral-300">{sceneAIProposal.scene_setting_proposal.location_type}</div>
+                        </div>
+                        <div className="bg-neutral-800/50 p-2 rounded">
+                          <span className="text-neutral-500">Time:</span>
+                          <div className="text-neutral-300">{sceneAIProposal.scene_setting_proposal.time_of_day}</div>
+                        </div>
+                        <div className="bg-neutral-800/50 p-2 rounded">
+                          <span className="text-neutral-500">Key Elements:</span>
+                          <div className="text-neutral-300">{sceneAIProposal.scene_setting_proposal.key_elements}</div>
+                        </div>
+                        <div className="bg-neutral-800/50 p-2 rounded">
+                          <span className="text-neutral-500">Atmosphere:</span>
+                          <div className="text-neutral-300">{sceneAIProposal.scene_setting_proposal.atmosphere}</div>
+                        </div>
+                        <div className="col-span-2 bg-neutral-800/50 p-2 rounded">
+                          <span className="text-neutral-500">Lighting:</span>
+                          <div className="text-neutral-300">{sceneAIProposal.scene_setting_proposal.lighting_description}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Character Toggle */}
+                    <div className="flex items-center gap-3 p-2 bg-neutral-800/50 rounded">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={sceneIncludeCharacters}
+                          onChange={(e) => {
+                            setSceneIncludeCharacters(e.target.checked);
+                            // Update prompt based on toggle
+                            if (e.target.checked && sceneAIProposal.establishing_shot_with_characters_prompt) {
+                              setSceneImagePromptOverride(sceneAIProposal.establishing_shot_with_characters_prompt);
+                            } else if (sceneAIProposal.establishing_shot_prompt) {
+                              setSceneImagePromptOverride(sceneAIProposal.establishing_shot_prompt);
+                            }
+                          }}
+                          className="w-4 h-4 rounded"
+                        />
+                        <span className="text-xs text-neutral-300">Include characters in establishing shot</span>
+                      </label>
+                      <span className="text-[9px] text-neutral-500">
+                        (Check if characters are present throughout the scene)
+                      </span>
+                    </div>
+
+                    {/* Editable Image Prompt */}
+                    <div>
+                      <label className="block text-[10px] text-neutral-400 mb-1">
+                        Establishing Shot Prompt <span className="text-neutral-500">(edit to refine)</span>
+                      </label>
+                      <textarea
+                        className="field h-20 text-xs"
+                        value={sceneImagePromptOverride}
+                        onChange={(e) => setSceneImagePromptOverride(e.target.value)}
+                        placeholder="AI-generated prompt for the establishing shot..."
+                      />
+                    </div>
+
+                    {/* Pending Image Review */}
+                    {scenePendingImage && (
+                      <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                        <div className="text-[10px] text-amber-300 mb-2 font-medium">Review Generated Image:</div>
+                        <div className="flex gap-3">
+                          <div className="w-48 h-28 rounded overflow-hidden border border-neutral-600">
+                            <img
+                              src={`http://127.0.0.1:8000${media.find(m => m.id === scenePendingImage)?.url || ''}`}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                          <div className="flex-1 flex flex-col justify-center gap-2">
+                            <button
+                              className="button w-full bg-green-500/30 hover:bg-green-500/40 text-green-200 py-2"
+                              onClick={() => {
+                                // Accept: add to master images
+                                setSceneMasterImageIds([...sceneMasterImageIds, scenePendingImage]);
+                                setScenePendingImage(null);
+                              }}
+                            >
+                              ✓ Accept - Use This Image
+                            </button>
+                            <button
+                              className="button w-full bg-red-500/20 hover:bg-red-500/30 text-red-300 py-2"
+                              onClick={() => {
+                                // Reject: clear pending, can regenerate
+                                setScenePendingImage(null);
+                              }}
+                            >
+                              ✗ Reject - Try Again
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Generate Button */}
+                    {!scenePendingImage && (
+                      <button
+                        className="button w-full bg-gradient-to-r from-green-500/30 to-blue-500/30 hover:from-green-500/40 hover:to-blue-500/40 text-green-200 py-2.5 flex items-center justify-center gap-2 font-medium"
+                        disabled={!sceneImagePromptOverride.trim() || sceneImageGenerating}
+                        onClick={async () => {
+                          if (!sceneImagePromptOverride.trim()) return;
+                          setSceneImageGenerating(true);
+
+                          // Build final prompt with style additions
+                          let finalPrompt = sceneImagePromptOverride;
+                          if (sceneVisualStyle) finalPrompt += ` Visual style: ${sceneVisualStyle}.`;
+                          if (sceneColorPalette) finalPrompt += ` ${sceneColorPalette}.`;
+                          if (sceneToneNotes) finalPrompt += ` ${sceneToneNotes}.`;
+                          finalPrompt += ' Cinematic film still, 35mm, professional cinematography, high production value.';
+
+                          try {
+                            const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                project_id: projectId,
+                                scene_id: selectedSceneId || 'temp',
+                                prompt: finalPrompt,
+                                provider: 'replicate',
+                                media_type: 'image',
+                                model: 'bytedance/seedream-4',
+                                aspect_ratio: '16:9',
+                                num_outputs: 1
+                              })
+                            });
+                            const data = await res.json();
+                            if (res.ok && data.status === 'ok' && data.images) {
+                              await refreshMedia();
+                              const newMedia = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`).then(r => r.json());
+                              for (const imgPath of data.images) {
+                                const filename = imgPath.split('/').pop();
+                                const mediaItem = (newMedia.media || []).find((m: any) => m.id === filename);
+                                if (mediaItem) {
+                                  // Set as pending for review instead of auto-accepting
+                                  setScenePendingImage(mediaItem.id);
+                                  setMedia(newMedia.media || []);
+                                }
+                              }
+                            } else {
+                              alert(data.detail || 'Image generation failed');
+                            }
+                          } catch (err: any) {
+                            alert('Image generation error: ' + (err?.message || err));
+                          } finally {
+                            setSceneImageGenerating(false);
+                          }
+                        }}
+                      >
+                        {sceneImageGenerating ? (
+                          <>⏳ Generating Establishing Shot...</>
+                        ) : (
+                          <>🎬 Generate Establishing Shot</>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Step 1a: Master Scene Images - REQUIRED before characters */}
+                <div className={`p-3 rounded border ${sceneMasterImageIds.length === 0 ? 'border-amber-500/50 bg-amber-500/5' : 'border-green-500/30 bg-green-500/5'}`}>
+                  <label className="block text-xs text-neutral-400 mb-1">
+                    1️⃣ Scene Setting Images <span className="text-amber-400">* Required First</span>
+                    {sceneMasterImageIds.length > 0 && <span className="text-green-400 ml-2">✓ {sceneMasterImageIds.length} image(s)</span>}
+                  </label>
+                  <p className="text-[10px] text-neutral-500 mb-2">
+                    {sceneMasterImageIds.length === 0 ? (
+                      <span className="text-amber-400">Use AI Assist above to generate, or add existing images below. Required before generating character refs.</span>
+                    ) : (
+                      'These images define your scene setting. All shots and character refs will use this for consistency.'
+                    )}
+                  </p>
+                  <div className="flex gap-2 flex-wrap">
+                    {sceneMasterImageIds.map((imgId) => {
+                      const img = media.find(m => m.id === imgId);
+                      if (!img) return null;
+                      return (
+                        <div key={imgId} className="relative w-28 h-20 rounded border border-green-500/50 overflow-hidden group">
+                          <img src={`http://127.0.0.1:8000${img.url}`} className="w-full h-full object-cover" />
+                          <button
+                            className="absolute top-1 right-1 bg-red-500/80 text-white text-[10px] w-5 h-5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => setSceneMasterImageIds(sceneMasterImageIds.filter(id => id !== imgId))}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {imageMedia.length > 0 && (
+                      <div className="relative">
+                        <select
+                          className="w-28 h-20 rounded border-2 border-dashed border-neutral-700 bg-neutral-800/50 text-transparent cursor-pointer hover:border-violet-500/50"
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              setSceneMasterImageIds([...sceneMasterImageIds, e.target.value]);
+                              e.target.value = '';
+                            }
+                          }}
+                        >
+                          <option value="">Add existing...</option>
+                          {imageMedia.filter(m => !sceneMasterImageIds.includes(m.id)).map(m => (
+                            <option key={m.id} value={m.id}>{m.filename || m.id}</option>
+                          ))}
+                        </select>
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <Plus className="w-5 h-5 text-neutral-500" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Step 1b: Character-in-Scene Generation - shown AFTER scene image is accepted */}
+                {sceneMasterImageIds.length > 0 && sceneCast.length > 0 && (
+                  <div className="p-4 bg-gradient-to-b from-amber-500/10 to-orange-500/10 border border-amber-500/30 rounded-lg space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold text-amber-300 flex items-center gap-2">
+                        2️⃣ Character Scene References
+                      </div>
+                      <div className="text-[10px] text-neutral-500">
+                        {sceneCast.filter(c => c.scene_reference_ids && c.scene_reference_ids.length > 0).length}/{sceneCast.length} characters have scene refs
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-neutral-400">
+                      Generate scene-specific reference images for each character using the scene setting above. These define their wardrobe/appearance for THIS scene.
+                    </p>
+
+                    {/* Character Cards */}
+                    <div className="space-y-2">
+                      {sceneCast.map((cast, castIdx) => {
+                        const char = characters.find(c => c.character_id === cast.character_id);
+                        if (!char) return null;
+                        const hasSceneRef = cast.scene_reference_ids && cast.scene_reference_ids.length > 0;
+                        const isActive = sceneActiveCharacterId === cast.character_id;
+                        const globalRefImg = char.reference_image_ids?.[0];
+                        const globalImg = globalRefImg ? media.find(m => m.id === globalRefImg) : null;
+                        const sceneRefImg = cast.scene_reference_ids?.[0];
+                        const sceneImg = sceneRefImg ? media.find(m => m.id === sceneRefImg) : null;
+
+                        return (
+                          <div key={cast.character_id} className={`p-3 rounded border ${hasSceneRef ? 'border-green-500/30 bg-green-500/5' : 'border-neutral-700 bg-neutral-800/30'}`}>
+                            <div className="flex items-start gap-3">
+                              {/* Global ref thumbnail */}
+                              <div className="flex-shrink-0">
+                                <div className="text-[8px] text-neutral-500 mb-1">Global Ref</div>
+                                {globalImg ? (
+                                  <div className="w-12 h-12 rounded overflow-hidden border border-neutral-600">
+                                    <img src={`http://127.0.0.1:8000${globalImg.url}`} className="w-full h-full object-cover" />
+                                  </div>
+                                ) : (
+                                  <div className="w-12 h-12 rounded border border-neutral-700 bg-neutral-800 flex items-center justify-center text-neutral-600 text-lg">?</div>
+                                )}
+                              </div>
+
+                              {/* Arrow */}
+                              <div className="flex items-center text-neutral-600 pt-4">→</div>
+
+                              {/* Scene ref thumbnail */}
+                              <div className="flex-shrink-0">
+                                <div className="text-[8px] text-neutral-500 mb-1">Scene Ref</div>
+                                {sceneImg ? (
+                                  <div className="w-12 h-12 rounded overflow-hidden border border-green-500/50 relative group">
+                                    <img src={`http://127.0.0.1:8000${sceneImg.url}`} className="w-full h-full object-cover" />
+                                    <button
+                                      className="absolute inset-0 bg-red-500/80 text-white text-[10px] opacity-0 group-hover:opacity-100 flex items-center justify-center"
+                                      onClick={() => {
+                                        const newCast = [...sceneCast];
+                                        newCast[castIdx] = { ...newCast[castIdx], scene_reference_ids: [] };
+                                        setSceneCast(newCast);
+                                      }}
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="w-12 h-12 rounded border-2 border-dashed border-amber-500/30 bg-amber-500/5 flex items-center justify-center text-amber-500/50 text-lg">+</div>
+                                )}
+                              </div>
+
+                              {/* Character info and controls */}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-medium text-neutral-200">{char.name}</span>
+                                  {hasSceneRef && <span className="text-[9px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">✓ Ready</span>}
+                                </div>
+                                {cast.appearance_notes && (
+                                  <div className="text-[10px] text-neutral-500 mt-0.5">{cast.appearance_notes}</div>
+                                )}
+
+                                {/* Generate controls - only show if no scene ref or if active */}
+                                {(!hasSceneRef || isActive) && (
+                                  <div className="mt-2">
+                                    {!isActive ? (
+                                      <button
+                                        className="button text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 px-2 py-1"
+                                        onClick={() => {
+                                          setSceneActiveCharacterId(cast.character_id);
+                                          // Use pre-generated prompt from AI Assist if available
+                                          const charAppearances = sceneAIProposal?.character_appearances || {};
+                                          // Try to match character name in various formats
+                                          const charAppearance = charAppearances[char.name] ||
+                                            Object.entries(charAppearances).find(([name]) =>
+                                              name.toLowerCase().includes(char.name.toLowerCase()) ||
+                                              char.name.toLowerCase().includes(name.toLowerCase())
+                                            )?.[1] as any;
+
+                                          if (charAppearance?.reference_prompt) {
+                                            // Use AI-generated reference prompt
+                                            setSceneCharacterPrompt(charAppearance.reference_prompt);
+                                          } else {
+                                            // Build prompt from appearance notes and scene context
+                                            const locationDesc = sceneAIProposal?.scene_setting_proposal?.location_type || sceneLocationNotes?.split('\n')[0] || 'the location';
+                                            const lighting = sceneAIProposal?.scene_setting_proposal?.lighting_description || 'cinematic lighting';
+                                            const atmosphere = sceneAIProposal?.scene_setting_proposal?.atmosphere || '';
+                                            setSceneCharacterPrompt(
+                                              `Full body portrait of ${char.name} standing in ${locationDesc}. ` +
+                                              `${cast.appearance_notes || ''} ` +
+                                              `${lighting}. ${atmosphere} ` +
+                                              `Facing camera, professional cinematography, 35mm film, shallow depth of field.`
+                                            );
+                                          }
+                                        }}
+                                      >
+                                        ✨ Generate Scene Look
+                                      </button>
+                                    ) : (
+                                      <div className="space-y-2">
+                                        <textarea
+                                          className="field text-[10px] h-16 w-full"
+                                          value={sceneCharacterPrompt}
+                                          onChange={(e) => setSceneCharacterPrompt(e.target.value)}
+                                          placeholder="Describe character appearance, wardrobe, pose..."
+                                        />
+
+                                        {/* Pending image review */}
+                                        {scenePendingCharacterImage && (
+                                          <div className="flex gap-2 items-center p-2 bg-neutral-800 rounded">
+                                            <div className="w-20 h-14 rounded overflow-hidden border border-neutral-600">
+                                              <img src={`http://127.0.0.1:8000${media.find(m => m.id === scenePendingCharacterImage)?.url || ''}`} className="w-full h-full object-cover" />
+                                            </div>
+                                            <div className="flex-1 flex gap-1">
+                                              <button
+                                                className="button flex-1 text-[9px] bg-green-500/30 text-green-200 py-1"
+                                                onClick={() => {
+                                                  // Accept: add to this character's scene_reference_ids
+                                                  const newCast = [...sceneCast];
+                                                  newCast[castIdx] = {
+                                                    ...newCast[castIdx],
+                                                    scene_reference_ids: [...(newCast[castIdx].scene_reference_ids || []), scenePendingCharacterImage]
+                                                  };
+                                                  setSceneCast(newCast);
+                                                  setScenePendingCharacterImage(null);
+                                                  setSceneCharacterPrompt('');
+                                                  setSceneActiveCharacterId(null);
+                                                }}
+                                              >
+                                                ✓ Accept
+                                              </button>
+                                              <button
+                                                className="button flex-1 text-[9px] bg-red-500/20 text-red-300 py-1"
+                                                onClick={() => setScenePendingCharacterImage(null)}
+                                              >
+                                                ✗ Reject
+                                              </button>
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {/* Generate button */}
+                                        {!scenePendingCharacterImage && (
+                                          <div className="flex gap-1">
+                                            <button
+                                              className="button flex-1 text-[10px] bg-amber-500/30 hover:bg-amber-500/40 text-amber-200 py-1"
+                                              disabled={!sceneCharacterPrompt.trim() || sceneCharacterGenerating}
+                                              onClick={async () => {
+                                                if (!sceneCharacterPrompt.trim()) return;
+                                                setSceneCharacterGenerating(true);
+
+                                                // Get scene master image + this character's global refs
+                                                const sceneRefImg = sceneMasterImageIds[0];
+                                                const charRefs = char.reference_image_ids || [];
+
+                                                let finalPrompt = sceneCharacterPrompt;
+                                                if (sceneVisualStyle) finalPrompt += ` Visual style: ${sceneVisualStyle}.`;
+                                                if (sceneColorPalette) finalPrompt += ` ${sceneColorPalette}.`;
+                                                finalPrompt += ' Cinematic film still, full body, 35mm, professional cinematography.';
+
+                                                try {
+                                                  const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({
+                                                      project_id: projectId,
+                                                      scene_id: selectedSceneId || 'temp',
+                                                      prompt: finalPrompt,
+                                                      provider: 'replicate',
+                                                      media_type: 'image',
+                                                      model: 'bytedance/seedream-4',
+                                                      aspect_ratio: '16:9',
+                                                      num_outputs: 1,
+                                                      reference_images: [sceneRefImg, ...charRefs].filter(Boolean)
+                                                    })
+                                                  });
+                                                  const data = await res.json();
+                                                  if (res.ok && data.status === 'ok' && data.images) {
+                                                    await refreshMedia();
+                                                    const newMedia = await fetch(`http://127.0.0.1:8000/storage/${projectId}/media`).then(r => r.json());
+                                                    for (const imgPath of data.images) {
+                                                      const filename = imgPath.split('/').pop();
+                                                      const mediaItem = (newMedia.media || []).find((m: any) => m.id === filename);
+                                                      if (mediaItem) {
+                                                        setScenePendingCharacterImage(mediaItem.id);
+                                                        setMedia(newMedia.media || []);
+                                                      }
+                                                    }
+                                                  } else {
+                                                    alert(data.detail || 'Image generation failed');
+                                                  }
+                                                } catch (err: any) {
+                                                  alert('Image generation error: ' + (err?.message || err));
+                                                } finally {
+                                                  setSceneCharacterGenerating(false);
+                                                }
+                                              }}
+                                            >
+                                              {sceneCharacterGenerating ? '⏳ Generating...' : '🎬 Generate'}
+                                            </button>
+                                            <button
+                                              className="button text-[10px] bg-neutral-700 text-neutral-400 py-1 px-2"
+                                              onClick={() => {
+                                                setSceneActiveCharacterId(null);
+                                                setSceneCharacterPrompt('');
+                                              }}
+                                            >
+                                              Cancel
+                                            </button>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            )}
+
+            {/* Step 2: Visual Style */}
+            {sceneSetupStep === 2 && (
+              <div className="space-y-4">
+                <div className="text-xs text-neutral-400 mb-4">
+                  Define the visual tone for this scene. These settings will be incorporated into all shot prompts.
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">Visual Style</label>
+                    <input
+                      className="field"
+                      placeholder="e.g., 'gritty noir', 'dreamy soft focus', 'stark documentary'"
+                      value={sceneVisualStyle}
+                      onChange={(e) => setSceneVisualStyle(e.target.value)}
+                    />
+                    <div className="text-[9px] text-neutral-600 mt-1">Overall aesthetic feel</div>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">Color Palette</label>
+                    <input
+                      className="field"
+                      placeholder="e.g., 'desaturated blues', 'warm golden tones', 'high contrast B&W'"
+                      value={sceneColorPalette}
+                      onChange={(e) => setSceneColorPalette(e.target.value)}
+                    />
+                    <div className="text-[9px] text-neutral-600 mt-1">Dominant colors and grading</div>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">Camera Style</label>
+                    <input
+                      className="field"
+                      placeholder="e.g., 'handheld documentary', 'locked off static', 'steadicam fluid'"
+                      value={sceneCameraStyle}
+                      onChange={(e) => setSceneCameraStyle(e.target.value)}
+                    />
+                    <div className="text-[9px] text-neutral-600 mt-1">Camera movement approach</div>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">Additional Notes</label>
+                    <input
+                      className="field"
+                      placeholder="e.g., 'shallow DOF', 'anamorphic lens flares', '35mm film grain'"
+                      value={sceneToneNotes}
+                      onChange={(e) => setSceneToneNotes(e.target.value)}
+                    />
+                    <div className="text-[9px] text-neutral-600 mt-1">Cinematography details</div>
+                  </div>
+                </div>
+
+                {/* Style Preview */}
+                <div className="p-3 bg-neutral-800/50 rounded border border-neutral-700 mt-4">
+                  <div className="text-[10px] text-neutral-500 mb-2">Style Preview (how prompts will be enhanced):</div>
+                  <div className="text-xs text-neutral-300 italic">
+                    "...{sceneVisualStyle || 'visual style'}, {sceneColorPalette || 'color palette'}, {sceneCameraStyle || 'camera style'}, {sceneToneNotes || 'cinematography notes'}..."
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Navigation */}
+            <div className="mt-6 flex justify-between">
+              <div>
+                {sceneSetupStep > 1 && (
+                  <button className="button" onClick={() => setSceneSetupStep(sceneSetupStep - 1)}>
+                    ← Back
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Dialog.Close asChild>
+                  <button className="button">Cancel</button>
+                </Dialog.Close>
+                {sceneSetupStep === 1 && (
+                  <div className="flex flex-col items-end gap-1">
+                    <button
+                      className="button-primary"
+                      disabled={!sceneDescription.trim() || sceneMasterImageIds.length === 0}
+                      onClick={() => setSceneSetupStep(2)}
+                    >
+                      Next: Visual Style →
+                    </button>
+                    {sceneMasterImageIds.length === 0 && (
+                      <span className="text-[9px] text-amber-400">Requires at least one scene setting image</span>
+                    )}
+                  </div>
+                )}
+                {sceneSetupStep === 2 && (
+                  <button
+                    className="button-primary bg-green-600 hover:bg-green-700"
+                    disabled={sceneMasterImageIds.length === 0}
+                    onClick={async () => {
+                      if (!selectedSceneId) return;
+                      if (sceneMasterImageIds.length === 0) {
+                        alert('Please add or generate at least one scene setting image before completing setup.');
+                        setSceneSetupStep(1);
+                        return;
+                      }
+                      await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          description: sceneDescription,
+                          location_notes: sceneLocationNotes,
+                          master_image_ids: sceneMasterImageIds,
+                          cast: sceneCast,
+                          visual_style: sceneVisualStyle,
+                          color_palette: sceneColorPalette,
+                          camera_style: sceneCameraStyle,
+                          tone_notes: sceneToneNotes,
+                          setup_complete: true
+                        })
+                      });
+                      // Refresh scene detail
+                      const d = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then(r => r.json());
+                      setSceneDetail(d.scene ?? null);
+                      setSceneSetupComplete(true);
+                      setIsSceneContextOpen(false);
+                    }}
+                  >
+                    ✓ Complete Setup
+                  </button>
+                )}
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* AI Shot Planner Modal */}
+      <Dialog.Root open={isAIPlannerOpen} onOpenChange={async (open) => {
+        setIsAIPlannerOpen(open);
+        if (open && sceneSetupComplete) {
+          // Auto-populate from scene setup
+          setAIPlannerInput(sceneDescription);
+          // Auto-generate shot list if scene is set up
+          setAIPlannerLoading(true);
+          setAIPlannerResult([]);
+          try {
+            const res = await fetch('http://127.0.0.1:8000/ai/plan-shots', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                project_id: projectId,
+                scene_id: selectedSceneId,
+                scene_description: sceneDescription,
+                dialogue: aiPlannerDialogue || null,
+                location_notes: sceneLocationNotes || null,
+                apply_to_scene: false
+              })
+            });
+            const d = await res.json();
+            if (d.status === 'ok') {
+              setAIPlannerResult(d.shots);
+            }
+          } catch (e) {
+            console.error('Auto-plan error:', e);
+          }
+          setAIPlannerLoading(false);
+        } else if (open && sceneDescription) {
+          setAIPlannerInput(sceneDescription);
+        }
+      }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[900px] max-h-[90vh] card p-5 overflow-y-auto">
+            <Dialog.Title className="text-sm font-semibold mb-2 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-violet-400" />
+              AI Shot Planner
+            </Dialog.Title>
+            <Dialog.Description className="text-xs text-neutral-400 mb-4">
+              {sceneSetupComplete
+                ? 'Generating shot list from your scene setup. Each shot builds on the previous one for continuity.'
+                : 'Describe your scene and the AI will generate a detailed shot list.'}
+            </Dialog.Description>
+
+            {/* Scene Context Summary - shown when setup is complete */}
+            {sceneSetupComplete && (
+              <div className="mb-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
+                <div className="text-[10px] uppercase tracking-wider text-green-400 mb-2">Scene Context (from setup)</div>
+                <div className="grid grid-cols-2 gap-3 text-[11px]">
+                  <div>
+                    <span className="text-neutral-500">Location:</span>
+                    <span className="text-neutral-300 ml-1">{sceneLocationNotes?.split('\n')[0] || 'Not specified'}</span>
+                  </div>
+                  <div>
+                    <span className="text-neutral-500">Style:</span>
+                    <span className="text-neutral-300 ml-1">{sceneVisualStyle || 'Not specified'}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-neutral-500">Cast:</span>
+                    <span className="text-neutral-300 ml-1">
+                      {sceneCast.length > 0
+                        ? sceneCast.map(c => characters.find(ch => ch.character_id === c.character_id)?.name).filter(Boolean).join(', ')
+                        : 'No characters assigned'}
+                    </span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-neutral-500">Scene:</span>
+                    <span className="text-neutral-300 ml-1">{sceneDescription?.substring(0, 100)}{sceneDescription?.length > 100 ? '...' : ''}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Characters in Scene */}
+            {sceneCast.length > 0 && (
+              <div className="mb-4 p-3 bg-neutral-800/50 rounded border border-neutral-700">
+                <div className="text-[10px] uppercase tracking-wider text-neutral-500 mb-2">Characters in Scene</div>
+                <div className="flex flex-wrap gap-2">
+                  {sceneCast.map(cast => {
+                    const char = characters.find(c => c.character_id === cast.character_id);
+                    if (!char) return null;
+                    return (
+                      <div key={cast.character_id} className="text-xs px-2 py-1 rounded bg-violet-500/30 text-violet-200">
+                        <span className="font-medium">{char.name}</span>
+                        {cast.appearance_notes && (
+                          <span className="text-violet-300/70 ml-1">({cast.appearance_notes})</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-4">
+              {/* Input Section */}
+              <div className="space-y-3">
+                {!sceneSetupComplete && (
+                  <div>
+                    <label className="block text-xs text-neutral-400 mb-1">Scene Description *</label>
+                    <textarea
+                      className="field h-28"
+                      placeholder="Describe what happens in this scene..."
+                      value={aiPlannerInput}
+                      onChange={(e) => setAIPlannerInput(e.target.value)}
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs text-neutral-400 mb-1">
+                    {sceneSetupComplete ? 'Dialogue / Additional Notes (optional)' : 'Dialogue (optional)'}
+                  </label>
+                  <textarea
+                    className={`field ${sceneSetupComplete ? 'h-28' : 'h-36'}`}
+                    placeholder={sceneSetupComplete
+                      ? "Add any dialogue or additional direction for the shots...\n\nJONAS: Where is it?\nMARIA: You know where."
+                      : "JONAS: Where is it, Maria?\nMARIA: (coldly) You know where it is."}
+                    value={aiPlannerDialogue}
+                    onChange={(e) => setAIPlannerDialogue(e.target.value)}
+                  />
+                </div>
+                <button
+                  className="button-primary w-full flex items-center justify-center gap-2"
+                  disabled={(!aiPlannerInput.trim() && !sceneSetupComplete) || aiPlannerLoading}
+                  onClick={async () => {
+                    const desc = sceneSetupComplete ? sceneDescription : aiPlannerInput;
+                    if (!desc?.trim()) return;
+                    setAIPlannerLoading(true);
+                    setAIPlannerResult([]);
+                    try {
+                      const res = await fetch('http://127.0.0.1:8000/ai/plan-shots', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          project_id: projectId,
+                          scene_id: selectedSceneId,
+                          scene_description: desc + (aiPlannerDialogue ? `\n\nDialogue:\n${aiPlannerDialogue}` : ''),
+                          dialogue: aiPlannerDialogue || null,
+                          location_notes: sceneLocationNotes || null,
+                          apply_to_scene: false
+                        })
+                      });
+                      const d = await res.json();
+                      if (d.status === 'ok') {
+                        setAIPlannerResult(d.shots);
+                      } else {
+                        alert(d.detail || 'Failed to generate shot list');
+                      }
+                    } catch (e: any) {
+                      alert(e.message || 'Error generating shot list');
+                    }
+                    setAIPlannerLoading(false);
+                  }}
+                >
+                  {aiPlannerLoading ? (
+                    <>
+                      <span className="animate-spin">⏳</span>
+                      {sceneSetupComplete ? 'Planning Shots...' : 'Generating...'}
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      {aiPlannerResult.length > 0 ? 'Regenerate Shot List' : 'Generate Shot List'}
+                    </>
+                  )}
+                </button>
+
+                {/* Continuity Note */}
+                {sceneSetupComplete && (
+                  <div className="text-[10px] text-neutral-500 bg-neutral-800/30 p-2 rounded">
+                    💡 <strong>Continuity:</strong> Shot 1 uses your scene master image. Each subsequent shot will reference the previous shot's end frame for visual consistency.
+                  </div>
+                )}
+              </div>
+
+              {/* Results Section */}
+              <div className="border-l border-neutral-800 pl-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-medium text-neutral-300">Generated Shots</div>
+                  {aiPlannerResult.length > 0 && (
+                    <button
+                      className="button text-[10px] px-2 py-1 bg-green-500/20 text-green-300 hover:bg-green-500/30 disabled:opacity-50"
+                      disabled={aiPlannerApplying}
+                      onClick={async () => {
+                        setAIPlannerApplying(true);
+                        try {
+                          // Apply shots to scene
+                          const res = await fetch('http://127.0.0.1:8000/ai/plan-shots', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              project_id: projectId,
+                              scene_id: selectedSceneId,
+                              scene_description: aiPlannerInput,
+                              dialogue: aiPlannerDialogue || null,
+                              apply_to_scene: true
+                            })
+                          });
+                          const d = await res.json();
+                          if (d.status === 'ok') {
+                            // Refresh scene
+                            const sceneRes = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`);
+                            const sceneData = await sceneRes.json();
+                            setSceneDetail(sceneData.scene ?? null);
+                            setIsAIPlannerOpen(false);
+                            setAIPlannerResult([]);
+                            setAIPlannerInput('');
+                            setAIPlannerDialogue('');
+                          } else {
+                            alert(d.detail || 'Failed to apply shots');
+                          }
+                        } finally {
+                          setAIPlannerApplying(false);
+                        }
+                      }}
+                    >
+                      {aiPlannerApplying ? '⏳ Applying...' : 'Apply All to Timeline'}
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                  {aiPlannerResult.length === 0 ? (
+                    <div className="text-center py-8 text-neutral-500 text-xs">
+                      {aiPlannerLoading ? 'Generating shots...' : 'Describe your scene and click Generate'}
+                    </div>
+                  ) : (
+                    aiPlannerResult.map((shot: any, idx: number) => (
+                      <div key={idx} className="p-2 bg-neutral-800/50 rounded border border-neutral-700 text-xs space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white">{shot.shot_number || idx + 1}</span>
+                          <span className="bg-violet-500/30 text-violet-300 px-1.5 py-0.5 rounded text-[10px]">{shot.camera_angle}</span>
+                          {shot.duration_suggestion && (
+                            <span className="text-neutral-500">{shot.duration_suggestion}s</span>
+                          )}
+                        </div>
+                        <div className="text-neutral-300 font-medium">{shot.subject}</div>
+                        <div className="text-neutral-400">{shot.action}</div>
+                        {shot.dialogue && (
+                          <div className="text-amber-400/80 italic">"{shot.dialogue}"</div>
+                        )}
+                        {shot.prompt_suggestion && (
+                          <div className="text-neutral-500 text-[10px] mt-1 p-1 bg-neutral-900 rounded">
+                            <span className="text-neutral-600">Prompt:</span> {shot.prompt_suggestion}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="mt-4 flex justify-end">
               <Dialog.Close asChild>
                 <button className="button">Close</button>

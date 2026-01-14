@@ -40,6 +40,7 @@ from backend.storage.files import (
 )
 from backend.ai.replicate_client import ReplicateClient
 from backend.ai.vertex_client import VertexClient
+from backend.ai.cinematographer import generate_shot_list, refine_shot_prompt
 from ai_porting_bundle.providers.elevenlabs import ElevenLabsProvider
 from ai_porting_bundle.providers.wavespeed import WaveSpeedProvider
 from backend.storage.settings import read_settings, write_settings
@@ -317,9 +318,22 @@ def generate_shot(req: ShotGenerateRequest):
                             img_path = _normalize_path(media_item["path"])
                             ref_imgs.append(str(img_path))
             
-            # Normalize reference image paths
+            # Normalize reference image paths - convert media IDs to actual file paths
             if ref_imgs:
-                ref_imgs = [str(_normalize_path(r)) if not Path(r).is_absolute() else r for r in ref_imgs]
+                resolved_refs = []
+                for r in ref_imgs:
+                    # Check if this looks like a media ID (no slashes, no project_data prefix)
+                    if '/' not in r and not r.startswith('project_data'):
+                        # This is likely a media ID - look it up
+                        media_item = next((m for m in list_media(req.project_id) if m.get("id") == r), None)
+                        if media_item and media_item.get("path"):
+                            resolved_refs.append(str(_normalize_path(media_item["path"])))
+                        else:
+                            print(f"[WARN] Could not resolve media ID: {r}")
+                    else:
+                        # This is a path - normalize it
+                        resolved_refs.append(str(_normalize_path(r)) if not Path(r).is_absolute() else r)
+                ref_imgs = resolved_refs
             
             if req.media_type == "image":
                 # Image generation (e.g., Seedream-4)
@@ -806,6 +820,360 @@ def _run_multi_character_lipsync_job(job_id: str, req: MultiCharacterLipSyncRequ
         update_job(job_id, status="failed", error=str(e))
 
 
+# ============================================================================
+# AI Cinematographer - Shot Planning
+# ============================================================================
+
+class ShotPlanRequest(BaseModel):
+    project_id: str
+    scene_id: str
+    scene_description: str
+    dialogue: Optional[str] = None
+    location_notes: Optional[str] = None
+    num_shots: Optional[int] = None
+    apply_to_scene: bool = False  # If True, create shots in scene immediately
+
+
+@app.post("/ai/plan-shots")
+def plan_shots(req: ShotPlanRequest):
+    """Generate shot list using AI cinematographer."""
+    settings = read_settings()
+
+    # Determine provider and get API key
+    provider = settings.get("llm_provider", "anthropic")
+    if provider == "openai":
+        api_key = settings.get("openai_api_key")
+    else:
+        provider = "anthropic"  # Default to anthropic
+        api_key = settings.get("anthropic_api_key")
+
+    if not api_key:
+        return {"status": "error", "detail": f"No API key configured for {provider}. Add it in Settings."}
+
+    # Get all characters for context
+    all_chars = list_characters(req.project_id)
+
+    # Get scene-specific cast with appearance notes
+    scene = get_scene(req.project_id, req.scene_id) if req.scene_id else None
+    scene_cast = scene.get("cast", []) if scene else []
+
+    # Merge character info with scene-specific appearance
+    chars = []
+    for char in all_chars:
+        char_data = {
+            "name": char.get("name"),
+            "style_tokens": char.get("style_tokens"),
+        }
+        # Check if this character has scene-specific appearance
+        for cast_entry in scene_cast:
+            if cast_entry.get("character_id") == char.get("character_id"):
+                char_data["appearance_notes"] = cast_entry.get("appearance_notes")
+                break
+        chars.append(char_data)
+
+    try:
+        shots = generate_shot_list(
+            scene_description=req.scene_description,
+            dialogue=req.dialogue,
+            characters=chars,
+            location_notes=req.location_notes,
+            visual_style=scene.get("visual_style") if scene else None,
+            color_palette=scene.get("color_palette") if scene else None,
+            camera_style=scene.get("camera_style") if scene else None,
+            tone_notes=scene.get("tone_notes") if scene else None,
+            num_shots=req.num_shots,
+            provider=provider,
+            api_key=api_key
+        )
+
+        # Build name -> character_id mapping
+        name_to_id = {c.get("name", "").lower(): c.get("character_id") for c in all_chars}
+
+        # If apply_to_scene is True, create the shots in the scene
+        if req.apply_to_scene and req.scene_id:
+            for i, shot_data in enumerate(shots):
+                shot_id = f"shot_{int(time.time())}_{i+1:03d}"
+
+                # Auto-ID characters from characters_visible
+                characters_in_shot = []
+                for char_name in shot_data.get("characters_visible", []):
+                    char_id = name_to_id.get(char_name.lower())
+                    if char_id:
+                        characters_in_shot.append(char_id)
+
+                # Also check subject and speaker for character matches
+                for field in ["subject", "speaker"]:
+                    val = shot_data.get(field, "") or ""
+                    for name, cid in name_to_id.items():
+                        if name in val.lower() and cid not in characters_in_shot:
+                            characters_in_shot.append(cid)
+
+                shot_meta = {
+                    "shot_id": shot_id,
+                    "shot_number": shot_data.get("shot_number", i + 1),
+                    "camera_angle": shot_data.get("camera_angle"),
+                    "subject": shot_data.get("subject"),
+                    "action": shot_data.get("action"),
+                    "dialogue": shot_data.get("dialogue"),
+                    "characters_in_shot": characters_in_shot,
+                    "prompt": shot_data.get("prompt_suggestion"),
+                    "duration": shot_data.get("duration_suggestion", 5),
+                    "status": "planned"
+                }
+                add_shot(req.project_id, req.scene_id, shot_meta)
+
+        return {"status": "ok", "shots": shots, "applied": req.apply_to_scene}
+    except Exception as e:
+        logger.error(f"Shot planning failed: {e}", exc_info=True)
+        return {"status": "error", "detail": str(e)}
+
+
+class SceneAnalyzeRequest(BaseModel):
+    scene_description: str
+    location_notes: Optional[str] = None
+    existing_characters: Optional[List[str]] = None  # Names of characters in the project
+    cast_characters: Optional[List[str]] = None  # Names of characters DEFINITELY in this scene (must generate appearances for all)
+
+
+SCENE_ANALYSIS_PROMPT = '''You are an expert cinematographer, production designer, costume designer, and location scout.
+
+Given a scene description, analyze it and provide a comprehensive scene setup proposal including character wardrobe/appearance.
+
+Think deeply about:
+- What specific location would work best for this scene?
+- What time of day and lighting creates the right mood?
+- What key visual elements define this space?
+- What's the atmosphere and emotional tone?
+- What should each character be wearing/look like in THIS scene?
+
+Return ONLY valid JSON with this exact structure:
+{
+  "visual_style": "brief description of recommended visual style (e.g., 'gritty neo-noir with deep shadows')",
+  "color_palette": "specific color palette (e.g., 'desaturated teals and oranges, crushed blacks')",
+  "camera_style": "camera approach (e.g., 'handheld with subtle movement, wide lenses')",
+  "tone_notes": "additional cinematography details (e.g., 'anamorphic lens flares, shallow DOF')",
+  "suggested_characters": ["Character Name 1", "Character Name 2"],
+  "scene_setting_proposal": {
+    "location_type": "specific location type (e.g., 'abandoned industrial warehouse')",
+    "time_of_day": "when this takes place (e.g., 'late night, moonlight through windows')",
+    "key_elements": "3-5 defining visual elements of the space (e.g., 'rusted machinery, broken skylights, scattered debris, single hanging work light')",
+    "atmosphere": "the feeling/mood (e.g., 'tense, claustrophobic, danger lurking in shadows')",
+    "lighting_description": "how the scene is lit (e.g., 'harsh single source from above, deep shadows, rim lighting from windows')"
+  },
+  "establishing_shot_prompt": "A complete, detailed prompt for generating THE establishing shot of this scene WITHOUT characters. This is the master reference image that all other shots will be built from. Be extremely specific about: exact location details, lighting quality and direction, atmosphere, mood, camera angle (usually wide), and any environmental storytelling elements. This prompt should be 2-3 sentences of rich visual description. Focus purely on the environment/setting.",
+  "establishing_shot_with_characters_prompt": "Same as above, but WITH the main characters positioned in the scene. Describe where they are in the frame, their body language, and how they relate to the space.",
+  "character_appearances": {
+    "Character Name": {
+      "appearance_notes": "Brief description of how they look in this scene (e.g., 'disheveled, exhausted, three-day stubble')",
+      "wardrobe": "What they're wearing (e.g., 'wrinkled white dress shirt, loosened tie, rolled sleeves')",
+      "reference_prompt": "Full detailed prompt for generating a reference image of this character in this scene. Include: full body shot, their specific wardrobe, pose, the scene's lighting style, and atmosphere. Should match the scene setting. Be specific about clothing details, colors, and textures."
+    }
+  }
+}
+
+IMPORTANT: In "character_appearances", include an entry for EACH character mentioned in the scene or provided in the existing characters list. Each character needs their own appearance_notes, wardrobe, and reference_prompt tailored to THIS specific scene.'''
+
+
+@app.post("/ai/analyze-scene")
+def analyze_scene(req: SceneAnalyzeRequest):
+    """Analyze a scene description and suggest visual style, characters, and setting image prompts."""
+    settings = read_settings()
+
+    provider = settings.get("llm_provider", "anthropic")
+    if provider == "openai":
+        api_key = settings.get("openai_api_key")
+    else:
+        provider = "anthropic"
+        api_key = settings.get("anthropic_api_key")
+
+    if not api_key:
+        return {"status": "error", "detail": f"No API key configured for {provider}. Add your API key in Settings."}
+
+    # Build context message
+    user_message = f"Scene Description:\n{req.scene_description}"
+    if req.location_notes:
+        user_message += f"\n\nLocation Details:\n{req.location_notes}"
+
+    # Cast characters are the ones definitely in this scene - MUST generate appearances for all
+    if req.cast_characters and len(req.cast_characters) > 0:
+        user_message += f"\n\nCHARACTERS IN THIS SCENE (MUST generate appearance for ALL): {', '.join(req.cast_characters)}"
+
+    if req.existing_characters:
+        other_chars = [c for c in req.existing_characters if c not in (req.cast_characters or [])]
+        if other_chars:
+            user_message += f"\n\nOther characters in project (may or may not appear): {', '.join(other_chars)}"
+
+    user_message += "\n\nAnalyze this scene and provide recommendations. IMPORTANT: You MUST include a character_appearances entry for EVERY character listed in 'CHARACTERS IN THIS SCENE' above. Do not skip any."
+
+    try:
+        if provider == "anthropic":
+            import requests
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 2048,
+                    "system": SCENE_ANALYSIS_PROMPT,
+                    "messages": [{"role": "user", "content": user_message}]
+                },
+                timeout=60
+            )
+            if response.status_code != 200:
+                return {"status": "error", "detail": f"Anthropic API error: {response.status_code}"}
+            content = response.json().get("content", [{}])[0].get("text", "")
+        else:
+            import requests
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-4.1-2025-04-14",
+                    "messages": [
+                        {"role": "system", "content": SCENE_ANALYSIS_PROMPT},
+                        {"role": "user", "content": user_message}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 2048
+                },
+                timeout=60
+            )
+            if response.status_code != 200:
+                return {"status": "error", "detail": f"OpenAI API error: {response.status_code}"}
+            content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Parse JSON response
+        import json
+        content = content.strip()
+        # Remove markdown code blocks if present
+        if "```" in content:
+            lines = content.split("\n")
+            in_block = False
+            block_lines = []
+            for line in lines:
+                if line.strip().startswith("```"):
+                    if in_block:
+                        break
+                    else:
+                        in_block = True
+                        continue
+                if in_block:
+                    block_lines.append(line)
+            if block_lines:
+                content = "\n".join(block_lines)
+
+        # Find JSON object
+        start_idx = content.find("{")
+        end_idx = content.rfind("}") + 1
+        if start_idx != -1 and end_idx > start_idx:
+            json_str = content[start_idx:end_idx]
+            result = json.loads(json_str)
+            return {"status": "ok", "analysis": result}
+
+        return {"status": "error", "detail": "Could not parse AI response"}
+    except Exception as e:
+        logger.error(f"Scene analysis failed: {e}", exc_info=True)
+        return {"status": "error", "detail": str(e)}
+
+
+class PromptRefineRequest(BaseModel):
+    project_id: str
+    scene_id: str
+    shot_id: str
+    scene_context: Optional[str] = None
+    character_info: Optional[str] = None
+    style_notes: Optional[str] = None
+
+
+@app.post("/ai/refine-prompt")
+def refine_prompt(req: PromptRefineRequest):
+    """Refine a shot's prompt using AI."""
+    settings = read_settings()
+
+    provider = settings.get("llm_provider", "anthropic")
+    if provider == "openai":
+        api_key = settings.get("openai_api_key")
+    else:
+        provider = "anthropic"
+        api_key = settings.get("anthropic_api_key")
+
+    if not api_key:
+        return {"status": "error", "detail": f"No API key configured for {provider}"}
+
+    # Get the shot
+    scene = get_scene(req.project_id, req.scene_id)
+    if not scene:
+        return {"status": "error", "detail": "Scene not found"}
+
+    shot = next((s for s in scene.get("shots", []) if s.get("shot_id") == req.shot_id), None)
+    if not shot:
+        return {"status": "error", "detail": "Shot not found"}
+
+    try:
+        refined = refine_shot_prompt(
+            shot=shot,
+            scene_context=req.scene_context or scene.get("description", ""),
+            character_info=req.character_info,
+            style_notes=req.style_notes,
+            provider=provider,
+            api_key=api_key
+        )
+        return {"status": "ok", "prompt": refined}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+# ============================================================================
+# Scene Export
+# ============================================================================
+
+@app.post("/render/export-scene/{project_id}/{scene_id}")
+def export_scene(project_id: str, scene_id: str):
+    """Export all video-ready shots as numbered files."""
+    import os
+
+    scene = get_scene(project_id, scene_id)
+    if not scene:
+        return {"status": "error", "detail": "Scene not found"}
+
+    export_dir = PROJECT_DATA_DIR / project_id / "exports" / scene_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    exported = []
+    for i, shot in enumerate(scene.get("shots", [])):
+        file_path = shot.get("file_path")
+        status = shot.get("status", "")
+
+        # Export shots that have a video file
+        if file_path:
+            src_path = Path(file_path)
+            if not src_path.is_absolute():
+                src_path = Path.cwd() / file_path
+
+            if src_path.exists():
+                dst = export_dir / f"{str(i+1).zfill(3)}.mp4"
+                shutil.copy(src_path, dst)
+                exported.append({
+                    "shot_id": shot.get("shot_id"),
+                    "file": str(dst.name),
+                    "duration": shot.get("duration")
+                })
+
+    return {
+        "status": "ok",
+        "export_dir": str(export_dir),
+        "files": exported,
+        "count": len(exported)
+    }
+
+
 class SceneRenderRequest(BaseModel):
     project_id: str
     shot_ids: List[str]
@@ -873,9 +1241,27 @@ def api_get_scene(project_id: str, scene_id: str):
     return {"scene": scene}
 
 
+class SceneCast(BaseModel):
+    """Character appearance in a specific scene"""
+    character_id: str
+    appearance_notes: Optional[str] = None  # "Muddy clothes", "Formal wear"
+    scene_reference_ids: List[str] = []  # Scene-specific ref images
+
+
 class SceneUpdate(BaseModel):
     title: Optional[str] = None
     shot_order: Optional[List[str]] = None
+    # Scene context fields
+    description: Optional[str] = None
+    location_notes: Optional[str] = None
+    master_image_ids: Optional[List[str]] = None
+    cast: Optional[List[dict]] = None  # List of SceneCast dicts
+    # Visual style/tone (Phase 1 setup)
+    visual_style: Optional[str] = None  # "gritty noir", "dreamy soft focus", etc.
+    color_palette: Optional[str] = None  # "desaturated blues", "warm golden tones"
+    camera_style: Optional[str] = None  # "handheld documentary", "locked off static"
+    tone_notes: Optional[str] = None  # Additional cinematography notes
+    setup_complete: Optional[bool] = None  # True when Phase 1 is done
 
 
 @app.put("/storage/{project_id}/scenes/{scene_id}")
@@ -889,6 +1275,24 @@ def api_update_scene(project_id: str, scene_id: str, body: SceneUpdate):
         if s.get("scene_id") == scene_id:
             if body.title is not None:
                 s["title"] = body.title
+            if body.description is not None:
+                s["description"] = body.description
+            if body.location_notes is not None:
+                s["location_notes"] = body.location_notes
+            if body.master_image_ids is not None:
+                s["master_image_ids"] = body.master_image_ids
+            if body.cast is not None:
+                s["cast"] = body.cast
+            if body.visual_style is not None:
+                s["visual_style"] = body.visual_style
+            if body.color_palette is not None:
+                s["color_palette"] = body.color_palette
+            if body.camera_style is not None:
+                s["camera_style"] = body.camera_style
+            if body.tone_notes is not None:
+                s["tone_notes"] = body.tone_notes
+            if body.setup_complete is not None:
+                s["setup_complete"] = body.setup_complete
             if body.shot_order is not None:
                 # Reorder shots based on shot_order list
                 shots = s.get("shots", [])
@@ -906,12 +1310,28 @@ def api_update_scene(project_id: str, scene_id: str, body: SceneUpdate):
 
 class ShotCreate(BaseModel):
     shot_id: str
+    # Planning fields
+    shot_number: Optional[int] = None
+    camera_angle: Optional[str] = None  # "Wide", "Medium", "Close-up", etc.
+    subject: Optional[str] = None  # Who/what is the focus
+    action: Optional[str] = None  # What happens in this shot
+    dialogue: Optional[str] = None  # Any dialogue in this shot
+    characters_in_shot: Optional[List[str]] = None  # Auto-ID'd character IDs
+    status: Optional[str] = "planned"  # "planned" | "image_ready" | "audio_ready" | "video_ready"
+    # Image generation
     prompt: Optional[str] = None
+    start_frame_path: Optional[str] = None  # Generated start frame image
+    # Audio
+    audio_path: Optional[str] = None  # Voice/dialogue audio
+    audio_character_id: Optional[str] = None  # Who's speaking
+    # Video generation
     model: Optional[str] = None
     duration: Optional[float] = None
-    file_path: Optional[str] = None
+    file_path: Optional[str] = None  # Final video
     first_frame_path: Optional[str] = None
     last_frame_path: Optional[str] = None
+    # Progressive consistency
+    continuity_frame_path: Optional[str] = None  # Frame from previous shot for consistency
     continuity_source: Optional[str] = None
     start_offset: Optional[float] = 0.0
     end_offset: Optional[float] = 0.0
@@ -1072,12 +1492,27 @@ def api_list_projects():
 
 # Shot update/delete
 class ShotUpdate(BaseModel):
+    # Planning fields
+    shot_number: Optional[int] = None
+    camera_angle: Optional[str] = None
+    subject: Optional[str] = None
+    action: Optional[str] = None
+    dialogue: Optional[str] = None
+    characters_in_shot: Optional[List[str]] = None
+    status: Optional[str] = None
+    # Image/Audio/Video
     prompt: Optional[str] = None
+    start_frame_path: Optional[str] = None
+    audio_path: Optional[str] = None
+    audio_character_id: Optional[str] = None
     duration: Optional[float] = None
     start_offset: Optional[float] = None
     end_offset: Optional[float] = None
     volume: Optional[float] = None
     file_path: Optional[str] = None
+    first_frame_path: Optional[str] = None
+    last_frame_path: Optional[str] = None
+    continuity_frame_path: Optional[str] = None
 
 
 @app.put("/storage/{project_id}/scenes/{scene_id}/shots/{shot_id}")
@@ -1420,6 +1855,10 @@ class SettingsBody(BaseModel):
     vertex_project_id: Optional[str] = None
     vertex_location: Optional[str] = None
     vertex_temp_bucket: Optional[str] = None
+    # LLM API keys for AI Cinematographer
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    llm_provider: Optional[str] = None  # "openai" or "anthropic"
 
 
 @app.post("/settings")
