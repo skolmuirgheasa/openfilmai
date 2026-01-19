@@ -61,6 +61,18 @@ def add_shot(project_id: str, scene_id: str, shot: Dict[str, Any]) -> Dict[str, 
     raise ValueError("Scene not found")
 
 
+def clear_scene_shots(project_id: str, scene_id: str) -> int:
+    """Clear all shots from a scene. Returns the number of shots removed."""
+    meta = read_metadata(project_id)
+    for s in meta.get("scenes", []):
+        if s.get("scene_id") == scene_id:
+            count = len(s.get("shots", []))
+            s["shots"] = []
+            write_metadata(project_id, meta)
+            return count
+    raise ValueError("Scene not found")
+
+
 def next_shot_id(scene_id: str) -> str:
     ts = int(time.time())
     return f"{scene_id}_shot_{ts}"
@@ -129,9 +141,10 @@ def add_media(project_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
 def archive_media(project_id: str, media_id: str, archived: bool = True) -> Dict[str, Any]:
     """Archive or unarchive a media item by ID. Returns dict with success status and optional error."""
     meta = read_metadata(project_id)
-    
-    # Check if this media is used as a character reference image
+
+    # Check if this media is used as a reference image (character or scene-specific)
     if archived:  # Only check when archiving, not unarchiving
+        # Check global character references
         characters = meta.get("characters", [])
         for char in characters:
             ref_images = char.get("reference_image_ids", [])
@@ -140,6 +153,31 @@ def archive_media(project_id: str, media_id: str, archived: bool = True) -> Dict
                     "success": False,
                     "error": f"Cannot archive: this image is used as a reference for character '{char.get('name', 'Unknown')}'. Remove it from the character first."
                 }
+
+        # Check scene-specific references (cast scene_reference_ids and master_image_ids)
+        scenes = meta.get("scenes", [])
+        for scene in scenes:
+            # Check master images
+            master_ids = scene.get("master_image_ids", [])
+            if media_id in master_ids:
+                return {
+                    "success": False,
+                    "error": f"Cannot archive: this image is used as a master reference for scene '{scene.get('title', scene.get('scene_id', 'Unknown'))}'. Remove it from the scene first."
+                }
+
+            # Check scene-specific character refs
+            cast = scene.get("cast", [])
+            for cast_member in cast:
+                scene_refs = cast_member.get("scene_reference_ids", [])
+                if media_id in scene_refs:
+                    char_id = cast_member.get("character_id", "Unknown")
+                    # Try to get character name
+                    char = next((c for c in characters if c.get("character_id") == char_id), None)
+                    char_name = char.get("name", char_id) if char else char_id
+                    return {
+                        "success": False,
+                        "error": f"Cannot archive: this image is used as a scene-specific reference for '{char_name}' in scene '{scene.get('title', scene.get('scene_id', 'Unknown'))}'. Remove it from the scene cast first."
+                    }
     
     media = meta.get("media", [])
     for item in media:
@@ -153,34 +191,51 @@ def archive_media(project_id: str, media_id: str, archived: bool = True) -> Dict
 def bulk_archive_media(project_id: str, media_ids: List[str], archived: bool = True) -> Dict[str, Any]:
     """Archive or unarchive multiple media items. Returns dict with count and skipped items."""
     meta = read_metadata(project_id)
-    
-    # Build set of media IDs that are character references
-    protected_ids = set()
+
+    # Build set of media IDs that are protected (character refs + scene refs + master images)
+    protected_ids = {}  # Maps ID to reason string
     if archived:  # Only check when archiving
         characters = meta.get("characters", [])
+        scenes = meta.get("scenes", [])
+
+        # Global character references
         for char in characters:
             ref_images = char.get("reference_image_ids", [])
-            protected_ids.update(ref_images)
-    
+            for ref_id in ref_images:
+                protected_ids[ref_id] = f"character ref: {char.get('name', 'Unknown')}"
+
+        # Scene-specific references
+        for scene in scenes:
+            scene_name = scene.get("title", scene.get("scene_id", "Unknown"))
+
+            # Master images
+            for master_id in scene.get("master_image_ids", []):
+                protected_ids[master_id] = f"scene master: {scene_name}"
+
+            # Cast scene refs
+            for cast_member in scene.get("cast", []):
+                char_id = cast_member.get("character_id", "Unknown")
+                char = next((c for c in characters if c.get("character_id") == char_id), None)
+                char_name = char.get("name", char_id) if char else char_id
+                for ref_id in cast_member.get("scene_reference_ids", []):
+                    protected_ids[ref_id] = f"scene ref: {char_name} in {scene_name}"
+
     media = meta.get("media", [])
     count = 0
     skipped = []
-    
+
     for item in media:
         item_id = item.get("id")
         if item_id in media_ids:
             if item_id in protected_ids:
-                # Find which character(s) use this
-                char_names = [c.get("name", "Unknown") for c in meta.get("characters", []) 
-                             if item_id in c.get("reference_image_ids", [])]
-                skipped.append({"id": item_id, "characters": char_names})
+                skipped.append({"id": item_id, "reason": protected_ids[item_id]})
             else:
                 item["archived"] = archived
                 count += 1
-    
+
     if count > 0:
         write_metadata(project_id, meta)
-    
+
     return {"count": count, "skipped": skipped}
 
 

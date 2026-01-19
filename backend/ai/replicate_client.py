@@ -149,20 +149,39 @@ class ReplicateClient:
         url = f"https://api.replicate.com/v1/models/{owner}/{name}/predictions"
 
         inputs: Dict[str, object] = {"prompt": prompt}
-        
+
         # Model-specific handling
-        if "seedream" in model.lower() or model == "bytedance/seedream-4":
-            # Seedream-4 specific parameters (from actual API docs)
+        if "seedream" in model.lower():
+            # Seedream 4/4.5 - supports multi-image reference (1-14 images)
+            # API uses "image_input" (array of URIs)
             if aspect_ratio:
                 inputs["aspect_ratio"] = aspect_ratio
             if num_outputs is not None:
-                # Seedream-4 uses "max_images" not "num_outputs"
                 inputs["max_images"] = num_outputs
-            # Reference images for Seedream-4
-            # API uses "image_input" (array) not "reference_images"
             if reference_images and len(reference_images) > 0:
                 inputs["image_input"] = [self._to_data_url(p) for p in reference_images]
-                print(f"[REPLICATE] Sending {len(reference_images)} reference image(s) to Seedream-4 via 'image_input'")
+                print(f"[REPLICATE] Seedream: Sending {len(reference_images)} reference image(s) via 'image_input'")
+                for i, ref in enumerate(reference_images):
+                    print(f"  Image {i+1}: {ref[:80]}..." if len(ref) > 80 else f"  Image {i+1}: {ref}")
+        elif "nano-banana" in model.lower() or "nano_banana" in model.lower():
+            # NanoBanana - supports up to 14 images, 5 faces for character consistency
+            # API uses "image_input" (array of URIs)
+            if aspect_ratio:
+                inputs["aspect_ratio"] = aspect_ratio
+            if reference_images and len(reference_images) > 0:
+                print(f"[REPLICATE] NanoBanana: Processing {len(reference_images)} reference image(s)")
+                data_urls = []
+                for i, ref in enumerate(reference_images):
+                    try:
+                        data_url = self._to_data_url(ref)
+                        # Log the size of the base64 data
+                        b64_size = len(data_url) - data_url.index(',') - 1 if ',' in data_url else len(data_url)
+                        print(f"  Image {i+1}: {ref} -> base64 size: {b64_size} chars (~{b64_size * 3 // 4 // 1024} KB)")
+                        data_urls.append(data_url)
+                    except Exception as e:
+                        print(f"  Image {i+1}: {ref} -> FAILED to convert: {e}")
+                inputs["image_input"] = data_urls
+                print(f"[REPLICATE] NanoBanana: Successfully encoded {len(data_urls)} images")
         else:
             # Generic image model handling
             if aspect_ratio:

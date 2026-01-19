@@ -2,12 +2,27 @@ from pathlib import Path
 import subprocess
 from typing import Tuple
 
+# Default timeout for ffmpeg/ffprobe operations (seconds)
+FFMPEG_TIMEOUT = 60
+FFPROBE_TIMEOUT = 15
+
 
 def extract_first_last_frames(video_path: str, out_first: str, out_last: str) -> Tuple[str, str]:
+    """
+    Extract first and last frames from a video file.
+
+    Handles edge cases:
+    - Very short videos (< 1 second)
+    - Corrupted videos (timeout protection)
+    - Missing duration metadata
+    """
     video = Path(video_path)
     first = Path(out_first)
     last = Path(out_last)
-    
+
+    if not video.exists():
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
     # Ensure output directories exist
     first.parent.mkdir(parents=True, exist_ok=True)
     last.parent.mkdir(parents=True, exist_ok=True)
@@ -16,38 +31,63 @@ def extract_first_last_frames(video_path: str, out_first: str, out_last: str) ->
     try:
         result = subprocess.run([
             "ffmpeg", "-y", "-i", str(video), "-ss", "0", "-vframes", "1", str(first)
-        ], capture_output=True, text=True)
+        ], capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
         if result.returncode != 0:
             print(f"Error extracting first frame: {result.stderr}")
         else:
             print(f"First frame extracted successfully: {first}")
+    except subprocess.TimeoutExpired:
+        print(f"Timeout extracting first frame from {video_path}")
     except Exception as e:
         print(f"Exception extracting first frame: {e}")
 
-    # Last frame - use duration-based seeking
+    # Last frame - use duration-based seeking with robustness
     duration = get_video_duration(str(video))
-    
-    if duration > 0:
-        # Seek to near end of video
+
+    if duration > 0.5:
+        # Normal case: video has known duration > 0.5s
+        # Seek to 0.1s before end for reliability
         seek_time = max(0, duration - 0.1)
         try:
             result = subprocess.run([
                 "ffmpeg", "-y", "-ss", str(seek_time), "-i", str(video), "-vframes", "1", str(last)
-            ], capture_output=True, text=True)
+            ], capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
             if result.returncode != 0:
                 print(f"Error extracting last frame: {result.stderr}")
             else:
                 print(f"Last frame extracted successfully: {last}")
+        except subprocess.TimeoutExpired:
+            print(f"Timeout extracting last frame from {video_path}")
         except Exception as e:
             print(f"Exception extracting last frame: {e}")
+    elif duration > 0:
+        # Very short video (< 0.5s): use the only frame we can get
+        try:
+            result = subprocess.run([
+                "ffmpeg", "-y", "-i", str(video), "-vframes", "1", str(last)
+            ], capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
+            if result.returncode != 0:
+                print(f"Error extracting last frame (short video): {result.stderr}")
+            else:
+                print(f"Last frame extracted from short video: {last}")
+        except subprocess.TimeoutExpired:
+            print(f"Timeout extracting last frame from short video {video_path}")
+        except Exception as e:
+            print(f"Exception extracting last frame (short video): {e}")
     else:
-        # Fallback if duration probe fails
+        # Duration probe failed - use sseof fallback
         try:
             result = subprocess.run([
                 "ffmpeg", "-y", "-sseof", "-0.5", "-i", str(video), "-vframes", "1", str(last)
-            ], capture_output=True, text=True)
+            ], capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
             if result.returncode != 0:
-                print(f"Error extracting last frame (fallback): {result.stderr}")
+                # Final fallback: just grab first frame as last
+                print(f"sseof fallback failed, using first frame as last: {result.stderr}")
+                result = subprocess.run([
+                    "ffmpeg", "-y", "-i", str(video), "-vframes", "1", str(last)
+                ], capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            print(f"Timeout extracting last frame (fallback) from {video_path}")
         except Exception as e:
             print(f"Exception extracting last frame (fallback): {e}")
 
@@ -55,36 +95,57 @@ def extract_first_last_frames(video_path: str, out_first: str, out_last: str) ->
 
 
 def get_video_duration(video_path: str) -> float:
-    """Get the duration of a video file in seconds."""
+    """
+    Get the duration of a video file in seconds.
+
+    Includes timeout protection for corrupted files.
+    Returns 0.0 if duration cannot be determined.
+    """
     video = Path(video_path)
-    
+
+    if not video.exists():
+        print(f"Warning: Video file not found: {video_path}")
+        return 0.0
+
     # Try format duration first
-    probe = subprocess.run([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(video)
-    ], capture_output=True, text=True)
-    
-    if probe.returncode == 0 and probe.stdout.strip():
-        try:
-            val = float(probe.stdout.strip())
-            if val > 0: return val
-        except ValueError:
-            pass
-            
+    try:
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(video)
+        ], capture_output=True, text=True, timeout=FFPROBE_TIMEOUT)
+
+        if probe.returncode == 0 and probe.stdout.strip():
+            try:
+                val = float(probe.stdout.strip())
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+    except subprocess.TimeoutExpired:
+        print(f"Timeout probing duration (format) for {video_path}")
+    except Exception as e:
+        print(f"Error probing duration (format): {e}")
+
     # Fallback to stream duration if format duration fails
-    probe_stream = subprocess.run([
-        "ffprobe", "-v", "error", "-select_streams", "v:0", 
-        "-show_entries", "stream=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(video)
-    ], capture_output=True, text=True)
-    
-    if probe_stream.returncode == 0 and probe_stream.stdout.strip():
-        try:
-            val = float(probe_stream.stdout.strip())
-            if val > 0: return val
-        except ValueError:
-            pass
-            
+    try:
+        probe_stream = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(video)
+        ], capture_output=True, text=True, timeout=FFPROBE_TIMEOUT)
+
+        if probe_stream.returncode == 0 and probe_stream.stdout.strip():
+            try:
+                val = float(probe_stream.stdout.strip())
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+    except subprocess.TimeoutExpired:
+        print(f"Timeout probing duration (stream) for {video_path}")
+    except Exception as e:
+        print(f"Error probing duration (stream): {e}")
+
     print(f"Warning: Could not determine duration for {video_path}")
     return 0.0
 

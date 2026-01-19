@@ -23,6 +23,7 @@ from backend.storage.files import (
     add_scene,
     get_scene,
     add_shot,
+    clear_scene_shots,
     next_shot_id,
     ensure_scene_dirs,
     list_media,
@@ -237,6 +238,7 @@ class ShotGenerateRequest(BaseModel):
     project_id: str
     scene_id: str
     prompt: str
+    shot_id: Optional[str] = None  # If provided, update existing shot instead of creating new
     provider: Optional[str] = "replicate"  # replicate | vertex
     model: Optional[str] = None
     media_type: Optional[str] = "video"  # video | image
@@ -256,7 +258,10 @@ class ShotGenerateRequest(BaseModel):
 def generate_shot(req: ShotGenerateRequest):
     # Ensure directories
     dirs = ensure_scene_dirs(req.project_id, req.scene_id)
-    shot_id = next_shot_id(req.scene_id)
+    # Use provided shot_id if updating existing shot, otherwise generate new
+    shot_id = req.shot_id or next_shot_id(req.scene_id)
+    is_update = req.shot_id is not None
+    logger.info(f"[GENERATE] shot_id={shot_id}, is_update={is_update}, media_type={req.media_type}")
     try:
         if (req.provider or "").lower() == "vertex":
             s = read_settings()
@@ -308,6 +313,8 @@ def generate_shot(req: ShotGenerateRequest):
             
             # Handle character reference images
             ref_imgs = req.reference_images
+            print(f"[IMAGE GEN] Received reference_images from frontend: {ref_imgs}")
+            print(f"[IMAGE GEN] character_id: {req.character_id}")
             if req.character_id and not ref_imgs:
                 char = get_character(req.project_id, req.character_id)
                 if char and char.get("reference_image_ids"):
@@ -334,10 +341,15 @@ def generate_shot(req: ShotGenerateRequest):
                         # This is a path - normalize it
                         resolved_refs.append(str(_normalize_path(r)) if not Path(r).is_absolute() else r)
                 ref_imgs = resolved_refs
-            
+                print(f"[IMAGE GEN] Resolved reference images: {ref_imgs}")
+
             if req.media_type == "image":
                 # Image generation (e.g., Seedream-4)
                 print(f"[IMAGE GEN] Model: {model_used}, num_outputs: {req.num_outputs}, ref_imgs: {len(ref_imgs) if ref_imgs else 0}")
+                if ref_imgs:
+                    for i, path in enumerate(ref_imgs):
+                        exists = Path(path).exists() if path else False
+                        print(f"[IMAGE GEN]   Ref {i+1}: {path} (exists: {exists})")
                 output_urls = client_r.generate_image(
                     model=model_used,
                     prompt=req.prompt,
@@ -391,12 +403,15 @@ def generate_shot(req: ShotGenerateRequest):
                 if req.end_frame_path:
                     end_img = str(_normalize_path(req.end_frame_path))
                 
+                # NOTE: Video models do NOT support reference_images directly.
+                # Consistency is achieved through start_frame_path (generated from refs in image step).
+                # The ref_imgs parameter is passed for API compatibility but is ignored by all video models.
                 output_url = client_r.generate_video(
                     model=model_used,
                     prompt=req.prompt,
                     first_frame_image=start_img,
                     last_frame_image=end_img,
-                    reference_images=ref_imgs or None,
+                    reference_images=None,  # Explicitly None - video models use start frame for consistency
                     duration=req.duration or 8,
                     resolution=req.resolution or "1080p",
                     aspect_ratio=req.aspect_ratio or "16:9",
@@ -466,6 +481,28 @@ def generate_shot(req: ShotGenerateRequest):
             "last_frame_path": f"project_data/{rel_last}",
             "continuity_source": None,
         }
+
+        # Update existing shot or create new one
+        if is_update:
+            # Update existing shot with video info
+            logger.info(f"[GENERATE] Updating existing shot {shot_id} with video")
+            meta = read_metadata(req.project_id)
+            for s in meta.get("scenes", []):
+                if s.get("scene_id") == req.scene_id:
+                    for sh in s.get("shots", []):
+                        if sh.get("shot_id") == shot_id:
+                            # Update video-related fields
+                            sh["file_path"] = shot_meta["file_path"]
+                            sh["first_frame_path"] = shot_meta["first_frame_path"]
+                            sh["last_frame_path"] = shot_meta["last_frame_path"]
+                            sh["model"] = shot_meta["model"]
+                            sh["status"] = "video_ready"  # Mark shot as complete
+                            write_metadata(req.project_id, meta)
+                            logger.info(f"[GENERATE] Shot {shot_id} updated successfully")
+                            return {"status": "ok", "shot": sh, "file_url": video_url}
+            # If shot not found, fall through to create new
+            logger.warning(f"[GENERATE] Shot {shot_id} not found, creating new")
+
         add_shot(req.project_id, req.scene_id, shot_meta)
         return {"status": "ok", "shot": shot_meta, "file_url": video_url}
     except Exception as e:
@@ -832,6 +869,7 @@ class ShotPlanRequest(BaseModel):
     location_notes: Optional[str] = None
     num_shots: Optional[int] = None
     apply_to_scene: bool = False  # If True, create shots in scene immediately
+    shots: Optional[List[dict]] = None  # Pre-generated shots to apply (skips AI generation if provided)
 
 
 @app.post("/ai/plan-shots")
@@ -872,32 +910,46 @@ def plan_shots(req: ShotPlanRequest):
         chars.append(char_data)
 
     try:
-        shots = generate_shot_list(
-            scene_description=req.scene_description,
-            dialogue=req.dialogue,
-            characters=chars,
-            location_notes=req.location_notes,
-            visual_style=scene.get("visual_style") if scene else None,
-            color_palette=scene.get("color_palette") if scene else None,
-            camera_style=scene.get("camera_style") if scene else None,
-            tone_notes=scene.get("tone_notes") if scene else None,
-            num_shots=req.num_shots,
-            provider=provider,
-            api_key=api_key
-        )
+        # Use pre-generated shots if provided, otherwise generate new ones
+        if req.shots:
+            logger.info(f"Using {len(req.shots)} pre-generated shots (skipping AI generation)")
+            shots = req.shots
+        else:
+            shots = generate_shot_list(
+                scene_description=req.scene_description,
+                dialogue=req.dialogue,
+                characters=chars,
+                location_notes=req.location_notes,
+                visual_style=scene.get("visual_style") if scene else None,
+                color_palette=scene.get("color_palette") if scene else None,
+                camera_style=scene.get("camera_style") if scene else None,
+                tone_notes=scene.get("tone_notes") if scene else None,
+                num_shots=req.num_shots,
+                provider=provider,
+                api_key=api_key
+            )
 
         # Build name -> character_id mapping
         name_to_id = {c.get("name", "").lower(): c.get("character_id") for c in all_chars}
 
-        # If apply_to_scene is True, create the shots in the scene
+        # If apply_to_scene is True, clear existing shots and create the new shots in the scene
         if req.apply_to_scene and req.scene_id:
+            # Clear existing shots first to avoid duplicates
+            cleared_count = clear_scene_shots(req.project_id, req.scene_id)
+            logger.info(f"Cleared {cleared_count} existing shots from scene {req.scene_id}")
+
             for i, shot_data in enumerate(shots):
                 shot_id = f"shot_{int(time.time())}_{i+1:03d}"
 
                 # Auto-ID characters from characters_visible
                 characters_in_shot = []
+                logger.info(f"[SHOT {i+1}] Processing shot: {shot_data.get('subject', 'unknown')}")
+                logger.info(f"[SHOT {i+1}] characters_visible from AI: {shot_data.get('characters_visible', [])}")
+                logger.info(f"[SHOT {i+1}] name_to_id mapping: {name_to_id}")
+
                 for char_name in shot_data.get("characters_visible", []):
                     char_id = name_to_id.get(char_name.lower())
+                    logger.info(f"[SHOT {i+1}] Looking up '{char_name}' (lowercase: '{char_name.lower()}') -> {char_id}")
                     if char_id:
                         characters_in_shot.append(char_id)
 
@@ -906,7 +958,10 @@ def plan_shots(req: ShotPlanRequest):
                     val = shot_data.get(field, "") or ""
                     for name, cid in name_to_id.items():
                         if name in val.lower() and cid not in characters_in_shot:
+                            logger.info(f"[SHOT {i+1}] Found character '{name}' in {field}: '{val}'")
                             characters_in_shot.append(cid)
+
+                logger.info(f"[SHOT {i+1}] Final characters_in_shot: {characters_in_shot}")
 
                 shot_meta = {
                     "shot_id": shot_id,
@@ -1127,6 +1182,103 @@ def refine_prompt(req: PromptRefineRequest):
         )
         return {"status": "ok", "prompt": refined}
     except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+class AIShotPlanRequest(BaseModel):
+    project_id: str
+    scene_id: str
+    shot_id: str  # The shot we're planning
+    prev_video_path: str  # Path to the previous shot's video
+
+
+@app.post("/ai/plan-shot-from-video")
+def plan_shot_from_video(req: AIShotPlanRequest):
+    """
+    AI Director: Watch the previous shot's video and plan the complete next shot.
+
+    This analyzes the video, understands scene context, and returns a complete
+    execution plan including which refs to use, image prompt, video prompt, etc.
+    """
+    settings = read_settings()
+
+    # Need Vertex credentials for Gemini (same creds as Veo)
+    gcp_creds = settings.get("vertex_service_account_path")
+    gcp_project = settings.get("vertex_project_id")
+
+    if not gcp_creds or not gcp_project:
+        return {"status": "error", "detail": "GCP credentials not configured. Set up Vertex AI in settings."}
+
+    # Resolve video path
+    video_full_path = PROJECT_DATA_DIR / req.prev_video_path.replace("project_data/", "")
+    if not video_full_path.exists():
+        return {"status": "error", "detail": f"Video file not found: {req.prev_video_path}"}
+
+    # Get scene info
+    scene = get_scene(req.project_id, req.scene_id)
+    if not scene:
+        return {"status": "error", "detail": "Scene not found"}
+
+    # Find the shot we're planning
+    shot = next((s for s in scene.get("shots", []) if s.get("shot_id") == req.shot_id), None)
+    if not shot:
+        return {"status": "error", "detail": "Shot not found"}
+
+    # Get all characters
+    characters = list_characters(req.project_id)
+
+    # Build scene context
+    scene_context = scene.get("description", "")
+    if scene.get("location_notes"):
+        scene_context += f"\nLocation: {scene['location_notes']}"
+
+    # Build visual style string
+    style_parts = []
+    if scene.get("visual_style"):
+        style_parts.append(scene["visual_style"])
+    if scene.get("color_palette"):
+        style_parts.append(f"Colors: {scene['color_palette']}")
+    if scene.get("camera_style"):
+        style_parts.append(f"Camera: {scene['camera_style']}")
+    if scene.get("tone_notes"):
+        style_parts.append(f"Tone: {scene['tone_notes']}")
+    visual_style = ". ".join(style_parts) if style_parts else None
+
+    try:
+        client = VertexClient(
+            credentials_path=gcp_creds,
+            project_id=gcp_project,
+            location="us-central1"
+        )
+
+        result = client.plan_shot_from_video(
+            video_path=str(video_full_path),
+            scene_context=scene_context,
+            next_shot_info=shot,
+            available_characters=characters,
+            visual_style=visual_style
+        )
+
+        if result.get("status") == "error":
+            return {"status": "error", "detail": result.get("error", "Unknown error")}
+
+        return {
+            "status": "ok",
+            "plan": {
+                "video_end_state": result.get("video_end_state", ""),
+                "characters_in_shot": result.get("characters_in_shot", []),
+                "use_prev_last_frame": result.get("use_prev_last_frame", True),
+                "image_prompt": result.get("image_prompt", ""),
+                "video_prompt": result.get("video_prompt", ""),
+                "continuity_notes": result.get("continuity_notes", ""),
+                "reasoning": result.get("reasoning", "")
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"AI shot planning failed: {e}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "detail": str(e)}
 
 
@@ -1526,8 +1678,21 @@ def api_update_shot(project_id: str, scene_id: str, shot_id: str, body: ShotUpda
         if s.get("scene_id") == scene_id:
             for sh in s.get("shots", []):
                 if sh.get("shot_id") == shot_id:
-                    for k, v in body.model_dump(exclude_none=True).items():
+                    updates = body.model_dump(exclude_none=True)
+                    for k, v in updates.items():
                         sh[k] = v
+
+                    # Auto-update status based on what's being set
+                    # Priority: video_ready > audio_ready > image_ready > planned
+                    if "file_path" in updates and updates["file_path"]:
+                        sh["status"] = "video_ready"
+                    elif "audio_path" in updates and updates["audio_path"]:
+                        if sh.get("status") != "video_ready":
+                            sh["status"] = "audio_ready"
+                    elif "start_frame_path" in updates and updates["start_frame_path"]:
+                        if sh.get("status") not in ("video_ready", "audio_ready"):
+                            sh["status"] = "image_ready"
+
                     with open(meta_path, "w", encoding="utf-8") as f:
                         json.dump(data, f, indent=2)
                     return {"status": "ok", "shot": sh}

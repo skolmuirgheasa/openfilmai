@@ -165,6 +165,21 @@ export default function App() {
   const [vxEndImageId, setVxEndImageId] = useState<string | null>(null);
   const [vxRefImageIds, setVxRefImageIds] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [isRefiningPrompt, setIsRefiningPrompt] = useState<boolean>(false);
+  // AI Director state
+  const [isAIDirectorOpen, setIsAIDirectorOpen] = useState<boolean>(false);
+  const [aiDirectorLoading, setAIDirectorLoading] = useState<boolean>(false);
+  const [aiDirectorExecuting, setAIDirectorExecuting] = useState<boolean>(false);
+  const [aiDirectorShotIdx, setAIDirectorShotIdx] = useState<number | null>(null);
+  const [aiDirectorPlan, setAIDirectorPlan] = useState<{
+    video_end_state: string;
+    characters_in_shot: string[];
+    use_prev_last_frame: boolean;
+    image_prompt: string;
+    video_prompt: string;
+    continuity_notes: string;
+    reasoning: string;
+  } | null>(null);
   const [vxStartFromVideoId, setVxStartFromVideoId] = useState<string | null>(null);
   const [vxStartFramePath, setVxStartFramePath] = useState<string | null>(null);
   const [vxEndFromVideoId, setVxEndFromVideoId] = useState<string | null>(null);
@@ -206,7 +221,7 @@ export default function App() {
   const [sceneDescription, setSceneDescription] = useState<string>('');
   const [sceneLocationNotes, setSceneLocationNotes] = useState<string>('');
   const [sceneMasterImageIds, setSceneMasterImageIds] = useState<string[]>([]);
-  const [sceneCast, setSceneCast] = useState<{character_id: string; appearance_notes: string}[]>([]);
+  const [sceneCast, setSceneCast] = useState<{character_id: string; appearance_notes: string; scene_reference_ids?: string[]}[]>([]);
   const [sceneVisualStyle, setSceneVisualStyle] = useState<string>('');
   const [sceneColorPalette, setSceneColorPalette] = useState<string>('');
   const [sceneCameraStyle, setSceneCameraStyle] = useState<string>('');
@@ -220,6 +235,7 @@ export default function App() {
   // AI Scene Setup assistance
   const [sceneAILoading, setSceneAILoading] = useState<boolean>(false);
   const [sceneImageGenerating, setSceneImageGenerating] = useState<boolean>(false);
+  const [sceneImageModel, setSceneImageModel] = useState<string>('google/nano-banana'); // Default to NanoBanana for quality
   const [sceneAIProposal, setSceneAIProposal] = useState<any>(null);
   const [sceneIncludeCharacters, setSceneIncludeCharacters] = useState<boolean>(false);
   const [sceneImagePromptOverride, setSceneImagePromptOverride] = useState<string>('');
@@ -401,7 +417,7 @@ export default function App() {
         const list = data.characters ?? [];
         if (!cancelled) {
           setCharacters(list);
-          if (!selectedCharacterId && list.length > 0) setSelectedCharacterId(list[0].character_id);
+          // Don't auto-select a character - let the shot's characters_in_shot drive ref selection
         }
       } catch (_) {
         if (!cancelled) setCharacters([]);
@@ -877,10 +893,9 @@ export default function App() {
     const data = await fetch(`http://127.0.0.1:8000/storage/${projectId}/characters`).then((r) => r.json());
     const list = data.characters ?? [];
     setCharacters(list);
-    if (!selectedCharacterId && list.length > 0) {
-      setSelectedCharacterId(list[0].character_id);
-    } else if (selectedCharacterId && !list.find((c: Character) => c.character_id === selectedCharacterId)) {
-      setSelectedCharacterId(list.length ? list[0].character_id : null);
+    // Only reset if the currently selected character was deleted
+    if (selectedCharacterId && !list.find((c: Character) => c.character_id === selectedCharacterId)) {
+      setSelectedCharacterId(null);
     }
   }
 
@@ -2054,40 +2069,49 @@ export default function App() {
                     <Dialog.Description className="text-xs text-neutral-400 mb-3">
                       Generate a shot (choose provider). Continuity option uses the last frame of the previous shot.
                     </Dialog.Description>
-                    {/* Progressive Consistency Info */}
-                    {generatingForShotIdx !== null && (autoInjectedRefs.scene.length > 0 || autoInjectedRefs.character.length > 0 || autoInjectedRefs.continuity) && (
-                      <div className="mb-4 p-3 bg-violet-500/10 border border-violet-500/30 rounded-lg">
-                        <div className="text-[11px] font-semibold text-violet-400 mb-2 flex items-center gap-2">
-                          <span>🎬</span> Progressive Consistency Active
-                          <span className="text-[9px] bg-violet-500/20 px-1.5 py-0.5 rounded text-violet-300">Shot {generatingForShotIdx + 1}</span>
-                        </div>
-                        <div className="space-y-1 text-[10px] text-neutral-400">
-                          {autoInjectedRefs.scene.length > 0 && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-neutral-500">Scene refs:</span>
-                              <span className="text-blue-400">{autoInjectedRefs.scene.length} image(s)</span>
-                              <span className="text-[9px] text-neutral-600">(master + wide shots)</span>
-                            </div>
+                    {/* Progressive Consistency Info - Show for all image generation */}
+                    {genMediaType === 'image' && (
+                      <div className={`mb-4 p-3 rounded-lg border ${replicateRefImages.length > 0 ? 'bg-green-500/10 border-green-500/30' : 'bg-amber-500/10 border-amber-500/30'}`}>
+                        <div className="text-[11px] font-semibold mb-2 flex items-center gap-2">
+                          {replicateRefImages.length > 0 ? (
+                            <span className="text-green-400">✓ {replicateRefImages.length} Reference Images Auto-Selected</span>
+                          ) : (
+                            <span className="text-amber-400">⚠️ No Reference Images - Check Scene Setup</span>
                           )}
-                          {autoInjectedRefs.character.length > 0 && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-neutral-500">Character refs:</span>
-                              <span className="text-amber-400">{autoInjectedRefs.character.length} reference(s)</span>
-                            </div>
-                          )}
-                          {autoInjectedRefs.continuity && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-neutral-500">Continuity frame:</span>
-                              <span className="text-green-400">✓ Using previous shot's frame</span>
-                            </div>
-                          )}
-                          {sceneVisualStyle && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-neutral-500">Style injected:</span>
-                              <span className="text-purple-400 truncate max-w-xs">{sceneVisualStyle.substring(0, 40)}...</span>
-                            </div>
+                          {generatingForShotIdx !== null && (
+                            <span className="text-[9px] bg-neutral-700 px-1.5 py-0.5 rounded text-neutral-300">Shot {generatingForShotIdx + 1}</span>
                           )}
                         </div>
+                        {replicateRefImages.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {replicateRefImages.slice(0, 6).map((refId, i) => {
+                              const refMedia = media.find(m => m.id === refId);
+                              return refMedia ? (
+                                <div key={refId} className="relative w-12 h-12 rounded overflow-hidden border-2 border-green-500">
+                                  <img src={`http://127.0.0.1:8000${refMedia.url}`} className="w-full h-full object-cover" />
+                                  <div className="absolute top-0 left-0 bg-green-500 text-white text-[8px] px-1">{i+1}</div>
+                                </div>
+                              ) : (
+                                <div key={refId} className="w-12 h-12 rounded border-2 border-red-500 bg-red-500/20 flex items-center justify-center">
+                                  <span className="text-[8px] text-red-400">ID: {refId.slice(0,8)}...</span>
+                                </div>
+                              );
+                            })}
+                            {replicateRefImages.length > 6 && (
+                              <div className="w-12 h-12 rounded border-2 border-neutral-600 bg-neutral-800 flex items-center justify-center">
+                                <span className="text-[10px] text-neutral-400">+{replicateRefImages.length - 6}</span>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-neutral-400 space-y-1">
+                            <div>Possible causes:</div>
+                            <div>• Shot has no characters_in_shot assigned</div>
+                            <div>• Characters have no reference images set</div>
+                            <div>• No scene master image set</div>
+                            <div className="text-amber-400 mt-2">Select images manually below or fix scene setup.</div>
+                          </div>
+                        )}
                       </div>
                     )}
                     <div className="grid grid-cols-2 gap-3 mb-3">
@@ -2097,7 +2121,7 @@ export default function App() {
                           setGenMediaType(e.target.value as 'video' | 'image');
                           if (e.target.value === 'image') {
                             setProvider('replicate');
-                            setReplicateModel('bytedance/seedream-4');
+                            setReplicateModel('google/nano-banana');
                           }
                         }}>
                           <option value="video">Video</option>
@@ -2131,7 +2155,9 @@ export default function App() {
                             </>
                           ) : (
                             <>
-                              <option value="bytedance/seedream-4">ByteDance Seedream-4</option>
+                              <option value="google/nano-banana">NanoBanana (Best for Character Consistency)</option>
+                              <option value="bytedance/seedream-4.5">Seedream 4.5</option>
+                              <option value="bytedance/seedream-4">Seedream 4</option>
                               {customModels.filter(m => m.model_type === 'image').length > 0 && (
                                 <optgroup label="Custom Models">
                                   {customModels.filter(m => m.model_type === 'image').map(m => (
@@ -2144,7 +2170,7 @@ export default function App() {
                         </select>
                       </div>
                     )}
-                    {genMediaType === 'image' && replicateModel === 'bytedance/seedream-4' && (
+                    {genMediaType === 'image' && (replicateModel.includes('seedream') || replicateModel.includes('nano-banana')) && (
                       <div className="grid grid-cols-2 gap-3 mb-3">
                         <div>
                           <label className="block text-xs text-neutral-400 mb-1">Aspect Ratio</label>
@@ -2207,31 +2233,34 @@ export default function App() {
                         </div>
                       </>
                     )}
-                    <div className="grid grid-cols-2 gap-3 mb-3">
-                      <div>
-                        <label className="block text-xs text-neutral-400 mb-1">Character (for consistency)</label>
-                        <select className="field" value={selectedCharacterId ?? ''} onChange={(e) => setSelectedCharacterId(e.target.value || null)}>
-                          <option value="">None</option>
-                          {characters.map((c) => (
-                            <option key={c.character_id} value={c.character_id}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                        <div className="text-[10px] text-neutral-500 mt-1">Character's reference images will be used</div>
-                      </div>
-                      {selectedCharacter ? (
-                        <div className="text-xs text-neutral-400 mt-6">
-                          {selectedCharacter.reference_image_ids?.length ? (
-                            <span className="text-green-400">✓ {selectedCharacter.reference_image_ids.length} reference image(s)</span>
-                          ) : (
-                            <span className="text-yellow-400">⚠ No reference images set</span>
-                          )}
+                    {/* Only show character selector if scene refs aren't already auto-injected */}
+                    {autoInjectedRefs.character.length === 0 && (
+                      <div className="grid grid-cols-2 gap-3 mb-3">
+                        <div>
+                          <label className="block text-xs text-neutral-400 mb-1">Character (for consistency)</label>
+                          <select className="field" value={selectedCharacterId ?? ''} onChange={(e) => setSelectedCharacterId(e.target.value || null)}>
+                            <option value="">None</option>
+                            {characters.map((c) => (
+                              <option key={c.character_id} value={c.character_id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="text-[10px] text-neutral-500 mt-1">Character's reference images will be used</div>
                         </div>
-                      ) : (
-                        <div className="text-xs text-neutral-500 mt-6">No character selected</div>
-                      )}
-                    </div>
+                        {selectedCharacter ? (
+                          <div className="text-xs text-neutral-400 mt-6">
+                            {selectedCharacter.reference_image_ids?.length ? (
+                              <span className="text-green-400">✓ {selectedCharacter.reference_image_ids.length} reference image(s)</span>
+                            ) : (
+                              <span className="text-yellow-400">⚠ No reference images set</span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-neutral-500 mt-6">No character selected</div>
+                        )}
+                      </div>
+                    )}
                     {genMediaType === 'video' ? (
                       <div className="space-y-3 mb-3">
                         <div className="text-[10px] text-neutral-500 mb-2">
@@ -2268,6 +2297,22 @@ export default function App() {
                               }}
                             />
                             Start/End frames {provider === 'vertex' ? '(Veo 3.1 fast)' : provider === 'replicate' && (replicateModel.includes('kling') || replicateModel.includes('seedance')) ? '(Kling/Seedance)' : ''}
+                          </label>
+                          <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
+                            <input
+                              type="radio"
+                              name="vxImageMode"
+                              checked={vxImageMode === 'reference'}
+                              onChange={() => {
+                                setVxImageMode('reference');
+                                setVxUsePrevLast(false);
+                                setVxStartImageId(null);
+                                setVxEndImageId(null);
+                                setVxStartFramePath(null);
+                                setVxEndFramePath(null);
+                              }}
+                            />
+                            Reference images (auto-generates start frame)
                           </label>
                         </div>
                         <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
@@ -2458,17 +2503,72 @@ export default function App() {
                           </div>
                         </div>
                         </>
+                        ) : vxImageMode === 'reference' ? (
+                        <>
+                        <div className="mt-3">
+                          <div className="text-[10px] text-neutral-500 mb-2">
+                            <strong>Reference Image Mode:</strong> Select character/scene reference images below. An image will be auto-generated first using these refs, then used as the start frame for video.
+                          </div>
+                          <label className="block text-xs text-neutral-400 mb-1">Select Reference Images</label>
+                          <div className="text-[10px] mb-2">
+                            {vxRefImageIds.length > 0 ? (
+                              <span className="text-green-400 font-medium">✓ {vxRefImageIds.length} reference image(s) selected</span>
+                            ) : (
+                              <span className="text-amber-400 font-medium">⚠️ No reference images selected</span>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-4 gap-2 max-h-[200px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
+                            {media.filter((m) => m.type === 'image').length === 0 ? (
+                              <div className="col-span-4 text-xs text-neutral-500 text-center py-4">No images yet</div>
+                            ) : (
+                              media.filter((m) => m.type === 'image').map((m) => {
+                                const selected = vxRefImageIds.includes(m.id);
+                                return (
+                                  <button
+                                    key={m.id}
+                                    className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                      selected ? 'border-cyan-500 ring-2 ring-cyan-500/50' : 'border-neutral-700 hover:border-cyan-400'
+                                    } cursor-pointer`}
+                                    onClick={() => {
+                                      setVxRefImageIds((prev) =>
+                                        selected ? prev.filter((id) => id !== m.id) : [...prev, m.id]
+                                      );
+                                    }}
+                                  >
+                                    <img
+                                      src={`http://127.0.0.1:8000${m.url}`}
+                                      className="w-full h-full object-cover"
+                                      alt={m.id}
+                                    />
+                                    {selected ? (
+                                      <div className="absolute inset-0 bg-cyan-500/20 flex items-center justify-center">
+                                        <div className="bg-cyan-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
+                                          ✓
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                    <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-[8px] px-1 py-0.5 truncate">
+                                      {m.id}
+                                    </div>
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                        </>
                         ) : null}
                       </div>
                     ) : null}
                     {provider === 'replicate' && genMediaType === 'image' && (
                       <div className="mb-3">
-                        <label className="block text-xs text-neutral-400 mb-1">Reference Images (optional - for character consistency)</label>
-                        <div className="text-[10px] text-neutral-500 mb-2">
-                          {selectedCharacter && selectedCharacter.reference_image_ids?.length ? (
-                            <span className="text-violet-400">Character "{selectedCharacter.name}" has {selectedCharacter.reference_image_ids.length} reference image(s) - will be used automatically</span>
+                        <label className="block text-xs text-neutral-400 mb-1">Reference Images (for character consistency)</label>
+                        {/* Show selected ref count with warning if none */}
+                        <div className="text-[10px] mb-2">
+                          {replicateRefImages.length > 0 ? (
+                            <span className="text-green-400 font-medium">✓ {replicateRefImages.length} reference image(s) selected - will be sent to API</span>
                           ) : (
-                            'Select images manually or choose a character with reference images'
+                            <span className="text-amber-400 font-medium">⚠️ No reference images selected - generation will be prompt-only</span>
                           )}
                         </div>
                         <div className="grid grid-cols-4 gap-2 max-h-[200px] overflow-y-auto p-2 bg-neutral-900/30 rounded border border-neutral-800">
@@ -2515,12 +2615,56 @@ export default function App() {
                       <label className="block text-xs text-neutral-400">
                         Prompt {shotPromptHistory.length > 0 ? <span className="text-neutral-600">(↑↓ for history)</span> : null}
                       </label>
-                      <button
-                        className="text-[10px] text-violet-400 hover:text-violet-300"
-                        onClick={() => setIsTemplatesOpen(true)}
-                      >
-                        📝 Templates
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {/* AI Refine button - only show for video mode with previous shot */}
+                        {genMediaType === 'video' && generatingForShotIdx !== null && generatingForShotIdx > 0 && (() => {
+                          const prevShot = sceneDetail?.shots?.[generatingForShotIdx - 1];
+                          return prevShot?.file_path ? (
+                            <button
+                              className={`text-[10px] px-2 py-0.5 rounded ${isRefiningPrompt ? 'bg-cyan-500/30 text-cyan-300' : 'bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30'}`}
+                              disabled={isRefiningPrompt}
+                              onClick={async () => {
+                                setIsRefiningPrompt(true);
+                                try {
+                                  const res = await fetch('http://127.0.0.1:8000/ai/analyze-video-continuity', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      project_id: projectId,
+                                      scene_id: selectedSceneId,
+                                      video_path: prevShot.file_path,
+                                      next_shot_prompt: genPrompt,
+                                      context: sceneDescription || undefined
+                                    })
+                                  });
+                                  const data = await res.json();
+                                  if (data.status === 'ok' && data.refined_prompt) {
+                                    setGenPrompt(data.refined_prompt);
+                                    console.log('[AI REFINE] End state:', data.end_state_description);
+                                    console.log('[AI REFINE] Continuity notes:', data.continuity_notes);
+                                  } else {
+                                    console.error('[AI REFINE] Failed:', data);
+                                    alert(data.detail || 'Failed to refine prompt');
+                                  }
+                                } catch (err) {
+                                  console.error('[AI REFINE] Error:', err);
+                                  alert('Error analyzing video. Check console.');
+                                } finally {
+                                  setIsRefiningPrompt(false);
+                                }
+                              }}
+                            >
+                              {isRefiningPrompt ? '⏳ Analyzing...' : '🎬 Refine from prev shot'}
+                            </button>
+                          ) : null;
+                        })()}
+                        <button
+                          className="text-[10px] text-violet-400 hover:text-violet-300"
+                          onClick={() => setIsTemplatesOpen(true)}
+                        >
+                          📝 Templates
+                        </button>
+                      </div>
                     </div>
                     <textarea
                       className="field h-28"
@@ -2588,7 +2732,12 @@ export default function App() {
                             let endFramePath: string | undefined = undefined;
                             let refImages: string[] | undefined = undefined;
                             const activeChar = selectedCharacterId ? characters.find((c) => c.character_id === selectedCharacterId) : null;
-                            const charRefPaths = activeChar?.reference_image_ids
+                            // Prioritize scene-specific refs for the active character, fall back to global refs
+                            const activeCastEntry = selectedCharacterId ? sceneCast?.find(c => c.character_id === selectedCharacterId) : null;
+                            const charRefIds = activeCastEntry?.scene_reference_ids?.length
+                              ? activeCastEntry.scene_reference_ids
+                              : activeChar?.reference_image_ids;
+                            const charRefPaths = charRefIds
                               ?.map((id) => media.find((m) => m.id === id)?.path)
                               .filter(Boolean) as string[] | undefined;
                             const promptWithStyle =
@@ -2624,10 +2773,39 @@ export default function App() {
                               // Replicate
                               if (genMediaType === 'image') {
                                 // For image generation, use reference images (from character or manual selection)
-                                refImages = charRefPaths || replicateRefImages.map(id => media.find(m => m.id === id)?.path).filter(Boolean) as string[];
+                                // Debug: Log what we're working with
+                                console.log('[GEN DEBUG] charRefPaths:', charRefPaths);
+                                console.log('[GEN DEBUG] replicateRefImages (IDs):', replicateRefImages);
+                                console.log('[GEN DEBUG] media array length:', media.length);
+
+                                // Map IDs to paths
+                                const mappedRefs = replicateRefImages.map(id => {
+                                  const found = media.find(m => m.id === id);
+                                  console.log(`[GEN DEBUG] Looking up ID "${id}": found=${!!found}, path=${found?.path}`);
+                                  return found?.path;
+                                }).filter(Boolean) as string[];
+
+                                refImages = charRefPaths || mappedRefs;
+                                console.log('[GEN DEBUG] Final refImages to send:', refImages);
+                                console.log('='.repeat(60));
+                                console.log('[GEN SUMMARY] REFERENCE IMAGES BEING SENT TO API:');
+                                if (refImages.length === 0) {
+                                  console.log('  ⚠️  NO REFERENCE IMAGES - generation will be prompt-only');
+                                } else {
+                                  refImages.forEach((path, i) => {
+                                    const mediaItem = media.find(m => m.path === path);
+                                    console.log(`  ${i+1}. ${path}`);
+                                    if (mediaItem) console.log(`     Media ID: ${mediaItem.id}`);
+                                  });
+                                }
+                                console.log('='.repeat(60));
                                 startFramePath = undefined;
                               } else {
-                                // For video generation, use start/end frames (same logic as Vertex)
+                                // For video generation, use start/end frames
+                                console.log('[VIDEO GEN] vxImageMode:', vxImageMode);
+                                console.log('[VIDEO GEN] vxStartFramePath:', vxStartFramePath);
+                                console.log('[VIDEO GEN] vxUsePrevLast:', vxUsePrevLast);
+
                                 if (vxImageMode === 'start_end') {
                                   // Priority: vxUsePrevLast > vxStartFramePath (extracted from video) > vxStartImageId
                                   if (vxUsePrevLast) {
@@ -2645,17 +2823,74 @@ export default function App() {
                                   }
                                   // End frame is always an image (vxEndImageId selected)
                                   endFramePath = vxEndImageId ? media.find(m => m.id === vxEndImageId)?.path : undefined;
+                                } else if (vxImageMode === 'reference') {
+                                  // Reference mode: First generate an image with the refs, then use as start frame
+                                  console.log('[VIDEO GEN] Reference mode - generating start frame first');
+                                  console.log('[VIDEO GEN] vxRefImageIds:', vxRefImageIds);
+
+                                  if (vxRefImageIds.length === 0) {
+                                    alert('Please select at least one reference image for reference mode.');
+                                    setIsGenerating(false);
+                                    return;
+                                  }
+
+                                  // Map ref IDs to paths
+                                  const refPaths = vxRefImageIds.map(id => media.find(m => m.id === id)?.path).filter(Boolean) as string[];
+                                  console.log('[VIDEO GEN] Reference image paths:', refPaths);
+
+                                  // Generate an image first using NanoBanana with the refs
+                                  const imagePayload = {
+                                    project_id: projectId,
+                                    scene_id: selectedSceneId,
+                                    prompt: promptWithStyle,
+                                    provider: 'replicate',
+                                    media_type: 'image',
+                                    model: 'google/nano-banana',
+                                    aspect_ratio: videoAspectRatio, // Use video aspect ratio for consistency
+                                    reference_images: refPaths
+                                  };
+                                  console.log('[VIDEO GEN] Auto-generating start frame with refs:', imagePayload);
+
+                                  try {
+                                    const imgRes = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify(imagePayload)
+                                    });
+                                    const imgData = await imgRes.json();
+
+                                    if (imgRes.ok && imgData.status === 'ok' && imgData.images && imgData.images.length > 0) {
+                                      startFramePath = imgData.images[0];
+                                      console.log('[VIDEO GEN] Auto-generated start frame:', startFramePath);
+                                      await refreshMedia(); // Refresh to show the new image
+                                    } else {
+                                      console.error('[VIDEO GEN] Failed to generate start frame:', imgData);
+                                      alert('Failed to generate start frame from references. Try again or use Start/End frames mode.');
+                                      setIsGenerating(false);
+                                      return;
+                                    }
+                                  } catch (err) {
+                                    console.error('[VIDEO GEN] Error generating start frame:', err);
+                                    alert('Error generating start frame. Check console for details.');
+                                    setIsGenerating(false);
+                                    return;
+                                  }
                                 } else {
-                                  // Legacy reference_frame fallback
-                                  startFramePath = reference_frame;
+                                  // none mode - no frames provided
+                                  console.log('[VIDEO GEN] No image mode selected - pure prompt video');
+                                  startFramePath = undefined;
                                 }
+                                console.log('[VIDEO GEN] Final startFramePath:', startFramePath);
                               }
                             }
                             jobId = startJob(`Generating ${genMediaType} ${selectedSceneId}`);
+                            // Get shot_id if we're generating for an existing shot (for video to update instead of create)
+                            const existingShot = generatingForShotIdx !== null ? sceneDetail?.shots?.[generatingForShotIdx] : null;
                             const payload = {
                               project_id: projectId,
                               scene_id: selectedSceneId,
                               prompt: promptWithStyle,
+                              shot_id: genMediaType === 'video' && existingShot ? existingShot.shot_id : undefined,  // Update existing shot
                               provider,
                               media_type: genMediaType,
                               model: provider === 'replicate' ? replicateModel : 'veo-3.1-fast-generate-preview',
@@ -2690,22 +2925,43 @@ export default function App() {
                               if (genMediaType === 'image') {
                                 // For image generation, refresh media to show new images
                                 await refreshMedia();
-                                
+
                                 // Auto-select the first generated image
                                 if (data.images && data.images.length > 0) {
-                                  const firstImageUrl = `http://127.0.0.1:8000${data.images[0].replace('project_data/', '/files/')}`;
+                                  const firstImagePath = data.images[0];
+                                  const firstImageUrl = `http://127.0.0.1:8000${firstImagePath.replace('project_data/', '/files/')}`;
                                   setCurrentImageUrl(firstImageUrl);
                                   setNowPlaying('');
                                   setPlayError('');
+
+                                  // CRITICAL: Link the generated image to the shot's start_frame_path
+                                  // This ensures "Gen Video" will auto-select this image
+                                  if (generatingForShotIdx !== null && sceneDetail?.shots?.[generatingForShotIdx]) {
+                                    const shot = sceneDetail.shots[generatingForShotIdx];
+                                    console.log('[IMAGE GEN] Linking image to shot:', shot.shot_id, '→', firstImagePath);
+                                    try {
+                                      await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${shot.shot_id}`, {
+                                        method: 'PUT',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ start_frame_path: firstImagePath })
+                                      });
+                                      // Refresh scene to get updated shot data
+                                      const sceneRes = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`).then(r => r.json());
+                                      setSceneDetail(sceneRes.scene ?? null);
+                                      console.log('[IMAGE GEN] Shot updated with start_frame_path');
+                                    } catch (e) {
+                                      console.error('[IMAGE GEN] Failed to link image to shot:', e);
+                                    }
+                                  }
                                 }
-                                
+
                                 setIsGenOpen(false);
                                 if (jobId) finishJob(jobId, 'done');
                                 const imageList = data.images?.map((img: string) => {
                                   const filename = img.split('/').pop();
                                   return `• ${filename}`;
                                 }).join('\n') || '';
-                                alert(`Generated ${data.images?.length || 1} image(s)!\n\n${imageList}\n\nImages are now visible and the first one is selected in the preview.`);
+                                alert(`Generated ${data.images?.length || 1} image(s)!\n\n${imageList}\n\nImage linked to shot and ready for video generation.`);
                               } else {
                                 // For video generation, show the video
                                 const url = `http://127.0.0.1:8000${data.file_url}`;
@@ -3394,7 +3650,8 @@ export default function App() {
                     {sceneCast.length > 0 ? (
                       sceneCast.slice(0, 4).map((cast, idx) => {
                         const char = characters.find(c => c.character_id === cast.character_id);
-                        const refImg = char?.reference_image_ids?.[0];
+                        // Prioritize scene-specific ref over global ref for thumbnail
+                        const refImg = cast.scene_reference_ids?.[0] || char?.reference_image_ids?.[0];
                         const img = refImg ? media.find(m => m.id === refImg) : null;
                         return (
                           <div key={idx} className="text-center">
@@ -3682,22 +3939,30 @@ export default function App() {
                             setGenPrompt(enhancedPrompt);
 
                             // Collect auto-injected references
+                            console.log('[GEN IMAGE] Shot:', sh.shot_id, 'characters_in_shot:', sh.characters_in_shot);
+                            console.log('[GEN IMAGE] sceneMasterImageIds:', sceneMasterImageIds);
+                            console.log('[GEN IMAGE] sceneCast:', sceneCast);
+
                             const sceneRefs = sceneMasterImageIds || [];
                             const charRefs: string[] = [];
                             const charsInShot = sh.characters_in_shot || [];
                             for (const charId of charsInShot) {
                               // First check for scene-specific refs (character appearance for THIS scene)
                               const castMember = sceneCast?.find(c => c.character_id === charId);
+                              console.log(`[GEN IMAGE] Character ${charId}: castMember=`, castMember, 'scene_reference_ids=', castMember?.scene_reference_ids);
                               if (castMember?.scene_reference_ids?.length) {
+                                console.log(`[GEN IMAGE] Using scene-specific refs for ${charId}:`, castMember.scene_reference_ids);
                                 charRefs.push(...castMember.scene_reference_ids);
                               } else {
                                 // Fall back to global character refs
                                 const char = characters.find(c => c.character_id === charId);
+                                console.log(`[GEN IMAGE] Falling back to global refs for ${charId}:`, char?.reference_image_ids);
                                 if (char?.reference_image_ids) {
                                   charRefs.push(...char.reference_image_ids);
                                 }
                               }
                             }
+                            console.log('[GEN IMAGE] Collected charRefs:', charRefs);
 
                             // Find recent wide/establishing shots for consistency
                             const wideRefs: string[] = [];
@@ -3737,9 +4002,17 @@ export default function App() {
 
                             // Auto-select reference images (scene master + character refs + wide shots)
                             const allRefs = [...new Set([...sceneRefs, ...charRefs, ...wideRefs])];
+                            console.log('[GEN IMAGE] Final allRefs (media IDs):', allRefs);
+                            console.log('[GEN IMAGE] Scene refs:', sceneRefs);
+                            console.log('[GEN IMAGE] Char refs:', charRefs);
+                            console.log('[GEN IMAGE] Wide refs:', wideRefs);
                             setReplicateRefImages(allRefs);
 
                             setGenMediaType('image');
+                            // Reset model to default image model when switching to image mode
+                            setReplicateModel('google/nano-banana');
+                            // CRITICAL: Reset selectedCharacterId so it doesn't override the shot's auto-injected refs
+                            setSelectedCharacterId(null);
                             setIsGenOpen(true);
                           }}
                           title={sh.start_frame_path || sh.first_frame_path ? 'Regenerate image' : 'Generate start frame'}
@@ -3853,10 +4126,21 @@ export default function App() {
                               });
 
                               setGenMediaType('video');
-                              // Use the shot's start frame, or fallback to continuity frame
+                              // Reset model to default video model when switching to video mode
+                              setReplicateModel('google/veo-3.1');
+                              // CRITICAL: Reset selectedCharacterId so it doesn't override the shot's auto-injected refs
+                              setSelectedCharacterId(null);
+                              // Use the shot's start frame for video generation
+                              console.log('[GEN VIDEO] Shot start_frame_path:', sh.start_frame_path);
+                              console.log('[GEN VIDEO] Shot first_frame_path:', sh.first_frame_path);
+                              console.log('[GEN VIDEO] Continuity frame:', continuityFrame);
+
                               if (continuityFrame) {
                                 setVxImageMode('start_end');
                                 setVxStartFramePath(continuityFrame);
+                                console.log('[GEN VIDEO] Set vxImageMode=start_end, vxStartFramePath=', continuityFrame);
+                              } else {
+                                console.log('[GEN VIDEO] WARNING: No continuity frame found!');
                               }
                               setIsGenOpen(true);
                             }
@@ -3865,6 +4149,51 @@ export default function App() {
                         >
                           {sh.file_path ? '✓ Video' : (sh.audio_path ? 'Lip Sync' : 'Gen Video')}
                         </button>
+
+                        {/* AI Director Button - show when previous shot has video */}
+                        {idx > 0 && (sceneDetail?.shots || [])[idx - 1]?.file_path && (
+                          <button
+                            className="text-[8px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const prevShot = (sceneDetail?.shots || [])[idx - 1];
+                              setAIDirectorShotIdx(idx);
+                              setAIDirectorPlan(null);
+                              setIsAIDirectorOpen(true);
+                              setAIDirectorLoading(true);
+
+                              try {
+                                const res = await fetch('http://127.0.0.1:8000/ai/plan-shot-from-video', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    project_id: projectId,
+                                    scene_id: selectedSceneId,
+                                    shot_id: sh.shot_id,
+                                    prev_video_path: prevShot.file_path
+                                  })
+                                });
+                                const data = await res.json();
+                                if (data.status === 'ok' && data.plan) {
+                                  setAIDirectorPlan(data.plan);
+                                } else {
+                                  console.error('[AI DIRECTOR] Failed:', data);
+                                  alert(data.detail || 'Failed to analyze video');
+                                  setIsAIDirectorOpen(false);
+                                }
+                              } catch (err) {
+                                console.error('[AI DIRECTOR] Error:', err);
+                                alert('Error analyzing video. Check console.');
+                                setIsAIDirectorOpen(false);
+                              } finally {
+                                setAIDirectorLoading(false);
+                              }
+                            }}
+                            title="AI Director: Analyze previous shot and plan this one"
+                          >
+                            🎬 AI
+                          </button>
+                        )}
 
                         {/* Delete */}
                         <button
@@ -4533,7 +4862,8 @@ export default function App() {
                   <div className="space-y-2 max-h-[200px] overflow-y-auto">
                     {sceneCast.map((cast, idx) => {
                       const char = characters.find(c => c.character_id === cast.character_id);
-                      const refImg = char?.reference_image_ids?.[0];
+                      // Prioritize scene-specific ref over global ref for thumbnail
+                      const refImg = cast.scene_reference_ids?.[0] || char?.reference_image_ids?.[0];
                       const img = refImg ? media.find(m => m.id === refImg) : null;
                       return (
                         <div key={idx} className="flex items-center gap-2 p-2 bg-neutral-800/50 rounded">
@@ -4667,7 +4997,7 @@ export default function App() {
                       <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
                         <div className="text-[10px] text-amber-300 mb-2 font-medium">Review Generated Image:</div>
                         <div className="flex gap-3">
-                          <div className="w-48 h-28 rounded overflow-hidden border border-neutral-600">
+                          <div className="relative w-48 h-28 rounded overflow-hidden border border-neutral-600">
                             <img
                               src={`http://127.0.0.1:8000${media.find(m => m.id === scenePendingImage)?.url || ''}`}
                               className="w-full h-full object-cover"
@@ -4693,42 +5023,77 @@ export default function App() {
                             >
                               ✗ Reject - Try Again
                             </button>
+                            <button
+                              className="button w-full bg-neutral-700 hover:bg-neutral-600 text-neutral-300 py-1.5 text-[10px] flex items-center justify-center gap-1.5"
+                              onClick={async () => {
+                                const img = media.find(m => m.id === scenePendingImage);
+                                if (img?.path) {
+                                  try {
+                                    await fetch('http://127.0.0.1:8000/storage/reveal-file', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ file_path: img.path })
+                                    });
+                                  } catch (err) {
+                                    console.error('Failed to reveal file:', err);
+                                  }
+                                }
+                              }}
+                            >
+                              <FolderOpen className="w-3 h-3" /> View Full Size
+                            </button>
                           </div>
                         </div>
                       </div>
                     )}
 
-                    {/* Generate Button */}
+                    {/* Model Selector + Generate Button */}
                     {!scenePendingImage && (
-                      <button
-                        className="button w-full bg-gradient-to-r from-green-500/30 to-blue-500/30 hover:from-green-500/40 hover:to-blue-500/40 text-green-200 py-2.5 flex items-center justify-center gap-2 font-medium"
-                        disabled={!sceneImagePromptOverride.trim() || sceneImageGenerating}
-                        onClick={async () => {
-                          if (!sceneImagePromptOverride.trim()) return;
-                          setSceneImageGenerating(true);
+                      <div className="space-y-2">
+                        <div className="flex gap-2 items-center">
+                          <label className="text-[10px] text-neutral-400 whitespace-nowrap">Image Model:</label>
+                          <select
+                            className="flex-1 bg-neutral-800 border border-neutral-700 rounded px-2 py-1.5 text-xs text-neutral-200"
+                            value={sceneImageModel}
+                            onChange={(e) => setSceneImageModel(e.target.value)}
+                          >
+                            <option value="google/nano-banana">NanoBanana (Best Quality)</option>
+                            <option value="bytedance/seedream-4.5">Seedream 4.5</option>
+                            <option value="bytedance/seedream-4">Seedream 4</option>
+                          </select>
+                        </div>
+                        <button
+                          className="button w-full bg-gradient-to-r from-green-500/30 to-blue-500/30 hover:from-green-500/40 hover:to-blue-500/40 text-green-200 py-2.5 flex items-center justify-center gap-2 font-medium"
+                          disabled={!sceneImagePromptOverride.trim() || sceneImageGenerating}
+                          onClick={async () => {
+                            if (!sceneImagePromptOverride.trim()) return;
+                            setSceneImageGenerating(true);
 
-                          // Build final prompt with style additions
-                          let finalPrompt = sceneImagePromptOverride;
-                          if (sceneVisualStyle) finalPrompt += ` Visual style: ${sceneVisualStyle}.`;
-                          if (sceneColorPalette) finalPrompt += ` ${sceneColorPalette}.`;
-                          if (sceneToneNotes) finalPrompt += ` ${sceneToneNotes}.`;
-                          finalPrompt += ' Cinematic film still, 35mm, professional cinematography, high production value.';
+                            // Build final prompt with style additions
+                            let finalPrompt = sceneImagePromptOverride;
+                            if (sceneVisualStyle) finalPrompt += ` Visual style: ${sceneVisualStyle}.`;
+                            if (sceneColorPalette) finalPrompt += ` ${sceneColorPalette}.`;
+                            if (sceneToneNotes) finalPrompt += ` ${sceneToneNotes}.`;
+                            finalPrompt += ' Cinematic film still, 35mm, professional cinematography, high production value.';
 
-                          try {
-                            const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({
-                                project_id: projectId,
-                                scene_id: selectedSceneId || 'temp',
-                                prompt: finalPrompt,
-                                provider: 'replicate',
-                                media_type: 'image',
-                                model: 'bytedance/seedream-4',
-                                aspect_ratio: '16:9',
-                                num_outputs: 1
-                              })
-                            });
+                            console.log('[Scene Image Gen] Model:', sceneImageModel);
+                            console.log('[Scene Image Gen] Prompt:', finalPrompt);
+
+                            try {
+                              const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  project_id: projectId,
+                                  scene_id: selectedSceneId || 'temp',
+                                  prompt: finalPrompt,
+                                  provider: 'replicate',
+                                  media_type: 'image',
+                                  model: sceneImageModel,
+                                  aspect_ratio: '16:9',
+                                  num_outputs: 1
+                                })
+                              });
                             const data = await res.json();
                             if (res.ok && data.status === 'ok' && data.images) {
                               await refreshMedia();
@@ -4758,6 +5123,7 @@ export default function App() {
                           <>🎬 Generate Establishing Shot</>
                         )}
                       </button>
+                      </div>
                     )}
                   </div>
                 )}
@@ -4940,13 +5306,33 @@ export default function App() {
                                         {/* Pending image review */}
                                         {scenePendingCharacterImage && (
                                           <div className="flex gap-2 items-center p-2 bg-neutral-800 rounded">
-                                            <div className="w-20 h-14 rounded overflow-hidden border border-neutral-600">
+                                            <div className="relative w-20 h-14 rounded overflow-hidden border border-neutral-600 group">
                                               <img src={`http://127.0.0.1:8000${media.find(m => m.id === scenePendingCharacterImage)?.url || ''}`} className="w-full h-full object-cover" />
+                                              <button
+                                                className="absolute bottom-0.5 right-0.5 bg-black/80 hover:bg-black/90 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                                                onClick={async () => {
+                                                  const img = media.find(m => m.id === scenePendingCharacterImage);
+                                                  if (img?.path) {
+                                                    try {
+                                                      await fetch('http://127.0.0.1:8000/storage/reveal-file', {
+                                                        method: 'POST',
+                                                        headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify({ file_path: img.path })
+                                                      });
+                                                    } catch (err) {
+                                                      console.error('Failed to reveal file:', err);
+                                                    }
+                                                  }
+                                                }}
+                                                title="Open in Finder"
+                                              >
+                                                <FolderOpen className="w-3 h-3" />
+                                              </button>
                                             </div>
                                             <div className="flex-1 flex gap-1">
                                               <button
                                                 className="button flex-1 text-[9px] bg-green-500/30 text-green-200 py-1"
-                                                onClick={() => {
+                                                onClick={async () => {
                                                   // Accept: add to this character's scene_reference_ids
                                                   const newCast = [...sceneCast];
                                                   newCast[castIdx] = {
@@ -4954,6 +5340,17 @@ export default function App() {
                                                     scene_reference_ids: [...(newCast[castIdx].scene_reference_ids || []), scenePendingCharacterImage]
                                                   };
                                                   setSceneCast(newCast);
+                                                  console.log('[SCENE REF ACCEPT] Updated sceneCast:', newCast);
+                                                  console.log('[SCENE REF ACCEPT] Accepted media ID:', scenePendingCharacterImage);
+
+                                                  // Auto-save to backend so refs persist even without clicking "Complete Setup"
+                                                  await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`, {
+                                                    method: 'PUT',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ cast: newCast })
+                                                  });
+                                                  console.log('[SCENE REF ACCEPT] Auto-saved cast to backend');
+
                                                   setScenePendingCharacterImage(null);
                                                   setSceneCharacterPrompt('');
                                                   setSceneActiveCharacterId(null);
@@ -4981,14 +5378,42 @@ export default function App() {
                                                 if (!sceneCharacterPrompt.trim()) return;
                                                 setSceneCharacterGenerating(true);
 
-                                                // Get scene master image + this character's global refs
+                                                // Get scene master image + this character's refs (scene-specific first, then global)
                                                 const sceneRefImg = sceneMasterImageIds[0];
-                                                const charRefs = char.reference_image_ids || [];
+                                                // First check for scene-specific refs (character appearance for THIS scene)
+                                                const castEntry = sceneCast?.find(c => c.character_id === char.character_id);
+                                                const charRefs = castEntry?.scene_reference_ids?.length
+                                                  ? castEntry.scene_reference_ids
+                                                  : (char.reference_image_ids || []);
 
-                                                let finalPrompt = sceneCharacterPrompt;
+                                                // Build prompt with multi-image reference instructions
+                                                // Character refs come first, then scene ref
+                                                // Prompt tells model which image is which
+                                                const numCharRefs = charRefs.length;
+                                                const sceneImgNum = numCharRefs + 1;
+
+                                                let finalPrompt = '';
+                                                if (numCharRefs > 0) {
+                                                  finalPrompt = `Generate a full body portrait of the person from Image ${numCharRefs > 1 ? '1-' + numCharRefs : '1'} in the scene setting from Image ${sceneImgNum}. `;
+                                                }
+                                                finalPrompt += sceneCharacterPrompt;
+                                                if (char.style_tokens) {
+                                                  finalPrompt += ` The character is ${char.style_tokens}.`;
+                                                }
                                                 if (sceneVisualStyle) finalPrompt += ` Visual style: ${sceneVisualStyle}.`;
                                                 if (sceneColorPalette) finalPrompt += ` ${sceneColorPalette}.`;
-                                                finalPrompt += ' Cinematic film still, full body, 35mm, professional cinematography.';
+                                                finalPrompt += ' Cinematic film still, 35mm, professional cinematography.';
+
+                                                // Reference images: character refs FIRST, then scene ref
+                                                const allRefs = [...charRefs, sceneRefImg].filter(Boolean);
+
+                                                console.log('[Scene Char Gen] Character:', char.name);
+                                                console.log('[Scene Char Gen] Char refs (Images 1-' + numCharRefs + '):', charRefs);
+                                                console.log('[Scene Char Gen] Scene ref (Image ' + sceneImgNum + '):', sceneRefImg);
+                                                console.log('[Scene Char Gen] All refs:', allRefs);
+                                                console.log('[Scene Char Gen] Final prompt:', finalPrompt);
+
+                                                console.log('[Scene Char Gen] Model:', sceneImageModel);
 
                                                 try {
                                                   const res = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
@@ -5000,10 +5425,10 @@ export default function App() {
                                                       prompt: finalPrompt,
                                                       provider: 'replicate',
                                                       media_type: 'image',
-                                                      model: 'bytedance/seedream-4',
+                                                      model: sceneImageModel,  // Use selected model
                                                       aspect_ratio: '16:9',
                                                       num_outputs: 1,
-                                                      reference_images: [sceneRefImg, ...charRefs].filter(Boolean)
+                                                      reference_images: allRefs
                                                     })
                                                   });
                                                   const data = await res.json();
@@ -5182,6 +5607,220 @@ export default function App() {
                 )}
               </div>
             </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* AI Director Modal */}
+      <Dialog.Root open={isAIDirectorOpen} onOpenChange={(open) => {
+        if (!open) {
+          setIsAIDirectorOpen(false);
+          setAIDirectorPlan(null);
+          setAIDirectorShotIdx(null);
+        }
+      }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+          <Dialog.Content className="dialog-content fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-neutral-900 border border-neutral-700 rounded-lg p-4 w-[700px] max-h-[85vh] overflow-y-auto">
+            <Dialog.Title className="text-lg font-bold text-white mb-3 flex items-center gap-2">
+              🎬 AI Director - Shot Plan
+              {aiDirectorShotIdx !== null && sceneDetail?.shots?.[aiDirectorShotIdx] && (
+                <span className="text-sm font-normal text-neutral-400">
+                  Shot {aiDirectorShotIdx + 1}: {sceneDetail.shots[aiDirectorShotIdx].subject || sceneDetail.shots[aiDirectorShotIdx].action?.slice(0, 30)}
+                </span>
+              )}
+            </Dialog.Title>
+
+            {aiDirectorLoading ? (
+              <div className="text-center py-12">
+                <div className="text-cyan-400 text-lg mb-2">⏳ Analyzing previous shot...</div>
+                <div className="text-neutral-500 text-sm">Gemini is watching the video and planning the next shot</div>
+              </div>
+            ) : aiDirectorPlan ? (
+              <div className="space-y-4">
+                {/* Video End State */}
+                <div className="bg-neutral-800/50 p-3 rounded border border-neutral-700">
+                  <div className="text-[10px] text-cyan-400 font-bold mb-1">📹 PREVIOUS VIDEO END STATE</div>
+                  <div className="text-xs text-neutral-300">{aiDirectorPlan.video_end_state}</div>
+                </div>
+
+                {/* Continuity Notes */}
+                {aiDirectorPlan.continuity_notes && (
+                  <div className="bg-amber-500/10 p-3 rounded border border-amber-500/30">
+                    <div className="text-[10px] text-amber-400 font-bold mb-1">⚠️ CONTINUITY REQUIREMENTS</div>
+                    <div className="text-xs text-amber-200">{aiDirectorPlan.continuity_notes}</div>
+                  </div>
+                )}
+
+                {/* Characters */}
+                {aiDirectorPlan.characters_in_shot.length > 0 && (
+                  <div className="bg-blue-500/10 p-3 rounded border border-blue-500/30">
+                    <div className="text-[10px] text-blue-400 font-bold mb-1">👥 CHARACTERS IN SHOT</div>
+                    <div className="flex gap-2 flex-wrap">
+                      {aiDirectorPlan.characters_in_shot.map((name, i) => (
+                        <span key={i} className="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded">{name}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Execution Plan */}
+                <div className="bg-green-500/10 p-3 rounded border border-green-500/30">
+                  <div className="text-[10px] text-green-400 font-bold mb-2">🎯 EXECUTION PLAN</div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <div className="text-[10px] text-neutral-400 mb-1">Step 1: Generate Start Frame Image</div>
+                      <div className="text-xs text-neutral-300 bg-neutral-800 p-2 rounded">{aiDirectorPlan.image_prompt}</div>
+                      {aiDirectorPlan.use_prev_last_frame && (
+                        <div className="text-[10px] text-violet-400 mt-1">✓ Will extract last frame from previous video as continuity reference</div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="text-[10px] text-neutral-400 mb-1">Step 2: Generate Video</div>
+                      <div className="text-xs text-neutral-300 bg-neutral-800 p-2 rounded">{aiDirectorPlan.video_prompt}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Reasoning */}
+                {aiDirectorPlan.reasoning && (
+                  <div className="bg-neutral-800/30 p-3 rounded border border-neutral-700">
+                    <div className="text-[10px] text-neutral-500 font-bold mb-1">💭 REASONING</div>
+                    <div className="text-xs text-neutral-400">{aiDirectorPlan.reasoning}</div>
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-2 pt-2 border-t border-neutral-700">
+                  <Dialog.Close asChild>
+                    <button className="button text-sm">Cancel</button>
+                  </Dialog.Close>
+                  <button
+                    className="button text-sm bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
+                    disabled={aiDirectorExecuting}
+                    onClick={async () => {
+                      if (aiDirectorShotIdx === null || !aiDirectorPlan) return;
+                      const shot = sceneDetail?.shots?.[aiDirectorShotIdx];
+                      if (!shot) return;
+
+                      setAIDirectorExecuting(true);
+                      const jobId = startJob(`AI Director: ${shot.shot_id}`);
+
+                      try {
+                        // Step 1: Get start frame (from prev shot's last frame if recommended, or generate)
+                        let startFramePath: string | undefined;
+
+                        if (aiDirectorPlan.use_prev_last_frame && aiDirectorShotIdx > 0) {
+                          const prevShot = sceneDetail?.shots?.[aiDirectorShotIdx - 1];
+                          if (prevShot?.last_frame_path) {
+                            startFramePath = prevShot.last_frame_path;
+                            console.log('[AI DIRECTOR] Using prev shot last frame:', startFramePath);
+                          }
+                        }
+
+                        // Step 2: Generate start frame image if needed
+                        if (!startFramePath) {
+                          console.log('[AI DIRECTOR] Generating start frame image...');
+
+                          // Get character refs for image generation
+                          const charRefs: string[] = [];
+                          for (const charName of aiDirectorPlan.characters_in_shot) {
+                            const char = characters.find(c => c.name.toLowerCase().includes(charName.toLowerCase()));
+                            if (char?.reference_image_ids) {
+                              const castEntry = sceneCast?.find(c => c.character_id === char.character_id);
+                              const refs = castEntry?.scene_reference_ids?.length ? castEntry.scene_reference_ids : char.reference_image_ids;
+                              charRefs.push(...refs);
+                            }
+                          }
+                          const refPaths = charRefs.map(id => media.find(m => m.id === id)?.path).filter(Boolean) as string[];
+
+                          const imgRes = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              project_id: projectId,
+                              scene_id: selectedSceneId,
+                              prompt: aiDirectorPlan.image_prompt,
+                              provider: 'replicate',
+                              media_type: 'image',
+                              model: 'google/nano-banana',
+                              aspect_ratio: '16:9',
+                              reference_images: refPaths
+                            })
+                          });
+                          const imgData = await imgRes.json();
+
+                          if (imgRes.ok && imgData.status === 'ok' && imgData.images?.[0]) {
+                            startFramePath = imgData.images[0];
+                            console.log('[AI DIRECTOR] Generated start frame:', startFramePath);
+                            await refreshMedia();
+
+                            // Link to shot
+                            await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${shot.shot_id}`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ start_frame_path: startFramePath })
+                            });
+                          } else {
+                            throw new Error(imgData.detail || 'Failed to generate start frame');
+                          }
+                        }
+
+                        // Step 3: Generate video using the start frame
+                        console.log('[AI DIRECTOR] Generating video with start frame:', startFramePath);
+                        const vidRes = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            project_id: projectId,
+                            scene_id: selectedSceneId,
+                            prompt: aiDirectorPlan.video_prompt,
+                            shot_id: shot.shot_id,
+                            provider: 'replicate',
+                            media_type: 'video',
+                            model: 'google/veo-3.1',
+                            duration: 8,
+                            resolution: '1080p',
+                            aspect_ratio: '16:9',
+                            start_frame_path: startFramePath,
+                            generate_audio: true
+                          })
+                        });
+                        const vidData = await vidRes.json();
+
+                        if (vidRes.ok && vidData.status === 'ok') {
+                          console.log('[AI DIRECTOR] Video generated:', vidData);
+                          await refreshMedia();
+                          // Refresh scene to show updated shot
+                          const sceneRes = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`);
+                          const sceneData = await sceneRes.json();
+                          setSceneDetail(sceneData.scene ?? null);
+                          finishJob(jobId, 'success');
+                          setIsAIDirectorOpen(false);
+                        } else {
+                          throw new Error(vidData.detail || 'Failed to generate video');
+                        }
+
+                      } catch (err) {
+                        console.error('[AI DIRECTOR] Execution error:', err);
+                        finishJob(jobId, 'error');
+                        alert(`AI Director error: ${err}`);
+                      } finally {
+                        setAIDirectorExecuting(false);
+                      }
+                    }}
+                  >
+                    {aiDirectorExecuting ? '⏳ Executing...' : '🚀 Execute Plan (Image → Video)'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-neutral-500">
+                No plan available
+              </div>
+            )}
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
@@ -5373,9 +6012,18 @@ export default function App() {
                       className="button text-[10px] px-2 py-1 bg-green-500/20 text-green-300 hover:bg-green-500/30 disabled:opacity-50"
                       disabled={aiPlannerApplying}
                       onClick={async () => {
+                        // Check for existing shots and warn user
+                        const existingShots = sceneDetail?.shots?.length || 0;
+                        if (existingShots > 0) {
+                          const confirmed = window.confirm(
+                            `⚠️ This will REPLACE all ${existingShots} existing shot(s) on the timeline with the ${aiPlannerResult.length} new AI-generated shots.\n\nAny generated images/videos for existing shots will remain in your media library but will no longer be linked to shots.\n\nContinue?`
+                          );
+                          if (!confirmed) return;
+                        }
+
                         setAIPlannerApplying(true);
                         try {
-                          // Apply shots to scene
+                          // Apply shots to scene - send pre-generated shots to avoid regeneration
                           const res = await fetch('http://127.0.0.1:8000/ai/plan-shots', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -5384,15 +6032,21 @@ export default function App() {
                               scene_id: selectedSceneId,
                               scene_description: aiPlannerInput,
                               dialogue: aiPlannerDialogue || null,
-                              apply_to_scene: true
+                              apply_to_scene: true,
+                              shots: aiPlannerResult  // Send already-generated shots to avoid count mismatch
                             })
                           });
                           const d = await res.json();
                           if (d.status === 'ok') {
-                            // Refresh scene
+                            // Refresh scene and all scene-related state
                             const sceneRes = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`);
                             const sceneData = await sceneRes.json();
                             setSceneDetail(sceneData.scene ?? null);
+                            // CRITICAL: Also refresh sceneCast so shot click handlers have correct refs
+                            if (sceneData.scene) {
+                              setSceneCast(sceneData.scene.cast ?? []);
+                              setSceneMasterImageIds(sceneData.scene.master_image_ids ?? []);
+                            }
                             setIsAIPlannerOpen(false);
                             setAIPlannerResult([]);
                             setAIPlannerInput('');
