@@ -17,13 +17,36 @@
 
 ---
 
-## The Problem
+## The Architectural Divergence
 
-Current AI video generators are powerful but stateless. Each generation starts from scratch with no memory of previous shots. Trying to generate a 2-minute scene in one prompt produces inconsistent characters, drifting art styles, and broken continuity.
+The current generative video industry (Google Veo, OpenAI Sora, Runway) is optimizing for **Temporal Coherence via Long Context Tuning (LCT)**. Their goal: expand the model's context window to generate 60+ seconds of continuous video in a single inference pass.
 
-**The industry approach**: Fine-tune LoRAs, pray for consistency, manually fix drift in post.
+### The Problems with LCT
 
-**Our approach**: Treat filmmaking as a **directed graph of inherited state**. Each shot is a node that inherits context from its parent nodes—scene settings, character references, and the previous shot's end frame. The AI orchestrator ensures every generation receives exactly the context it needs.
+| Issue | Description |
+|-------|-------------|
+| **Latent Drift** | As the context window expands, character identity features degrade ("melting faces"). The latent representation loses fidelity over time. |
+| **Editorial Rigidity** | A 60-second generation cannot be easily edited or paced without regenerating the entire context. |
+| **Compute Inefficiency** | Generating a 2-minute scene as a single context window requires exponentially more compute than generating twenty 6-second clips. |
+
+### The OpenFilm Solution: Hierarchical State Injection
+
+Instead of Long Context Tuning, we utilize a fundamentally different architecture:
+
+| LCT Approach | OpenFilm Approach |
+|--------------|-------------------|
+| Expand context window | Inject state per-shot |
+| Fight latent drift | Eliminate it structurally |
+| Generate entire scenes | Generate optimal 4-8s clips |
+| Pixels remember pixels | State objects remember state |
+
+**How it works:**
+
+1. **State Management** — The "Scene" is a state object holding immutable variables (lighting, character appearance refs, visual style tokens)
+2. **Short-Shot Inference** — Generate standard 4-8s clips where diffusion models perform best
+3. **Inheritance** — Each new shot inherits the *State* of the scene, not just the pixels of the previous frame
+
+**Result**: Infinite total runtime with zero identity drift, matching the actual workflow of professional nonlinear editing (NLE).
 
 ---
 
@@ -59,39 +82,39 @@ graph TD
     end
 ```
 
-### The Core Insight
+### The Production Pipeline
 
-Instead of asking an AI to generate an entire scene, we decompose filmmaking into the same workflow human filmmakers use:
+We decompose filmmaking into the same workflow human filmmakers use:
 
-1. **Lock the look** — Establish visual style, lighting, and character appearances at the scene level
-2. **Plan the coverage** — Generate a shot list with camera angles, subjects, and actions
-3. **Shoot progressively** — Generate each shot with full context inheritance from previous shots
-4. **Maintain continuity** — Use the end frame of Shot N as the start frame for Shot N+1
+1. **Lock the look** — Establish visual style, lighting, and character appearances at the scene level (State Lock)
+2. **Plan the coverage** — AI cinematographer generates shot list with camera angles, subjects, actions
+3. **Shoot progressively** — Each shot inherits scene state + previous shot's end frame
+4. **Maintain continuity** — End frame of Shot N becomes start frame for Shot N+1 (Frame Chain)
 
-This isn't a prompt template. It's a **context propagation engine** that ensures every AI call receives exactly the visual references needed for consistency.
+This isn't a prompt template. It's a **state propagation engine** that ensures every AI call receives exactly the visual context needed for consistency—without expanding context windows or fighting latent drift.
 
 ---
 
 ## Key Capabilities
 
-### Inheritance-Based Context Injection
+### Hierarchical State Injection
 
-Every shot automatically inherits:
+Every shot automatically inherits from its parent state objects:
 
 ```typescript
-interface ShotContext {
-  // Scene-level inheritance
-  scene_master_images: string[];     // Setting/location lock
-  scene_character_refs: string[];    // Wardrobe/appearance lock
-  visual_style: string;              // Color palette, camera style
+interface ShotState {
+  // Scene-level state (immutable per scene)
+  scene_master_images: string[];     // Setting/location lock - prevents environment drift
+  scene_character_refs: string[];    // Wardrobe/appearance lock - prevents costume drift
+  visual_style: string;              // Color palette, camera style - prevents tone drift
 
-  // Shot-level continuity
-  previous_shot_end_frame: string;   // Optical flow anchor
-  previous_shot_id: string;          // Graph linkage for context chain
+  // Shot-level continuity (the "smoking gun" for consistency)
+  previous_shot_end_frame: string;   // Frame chain anchor - eliminates cut discontinuity
+  previous_shot_id: string;          // Graph linkage - enables state traversal
 
-  // Character-level identity
-  global_character_refs: string[];   // Fallback identity (no scene-specific ref)
-  voice_id: string;                  // ElevenLabs voice profile
+  // Character-level identity (fallback hierarchy)
+  global_character_refs: string[];   // Identity baseline when no scene-specific ref exists
+  voice_id: string;                  // ElevenLabs voice profile for TTS
 }
 ```
 
@@ -202,29 +225,36 @@ class Shot:
     shot_id: str
     shot_number: int
 
-    # Planning
+    # Planning (AI cinematographer output)
     camera_angle: str                   # "Close-up", "Wide", "Over-the-shoulder"
     subject: str                        # "The physician"
     action: str                         # "turns sharply toward the door"
     characters_in_shot: List[str]       # ["physician", "male_guardian"]
     dialogue: Optional[str]             # Dialogue for this shot
 
-    # Generation
+    # Generation inputs
     prompt: str                         # Full image/video generation prompt
-    start_frame_path: Optional[str]     # Continuity anchor (prev shot's end frame)
+
+    # ═══════════════════════════════════════════════════════════════
+    # THE SMOKING GUN FOR CONSISTENCY
+    # ═══════════════════════════════════════════════════════════════
+    start_frame_path: Optional[str]     # Previous shot's end frame → this shot's start
+    scene_id: str                       # Links to parent Scene state object
+    # These two fields enable: zero latent drift, infinite runtime, NLE workflow
+    # ═══════════════════════════════════════════════════════════════
 
     # Outputs
     image_path: Optional[str]           # Generated still frame
     audio_path: Optional[str]           # Generated dialogue audio
     file_path: Optional[str]            # Generated video
 
-    # Continuity Graph
+    # State machine
     status: Literal["planned", "image_ready", "audio_ready", "video_ready"]
 ```
 
-### The Inheritance Resolution Algorithm
+### The State Injection Algorithm
 
-When generating Shot N:
+When generating Shot N, the system resolves and injects state from the hierarchy:
 
 ```python
 def resolve_shot_context(shot, scene, project):
@@ -473,6 +503,6 @@ MIT
 
 <div align="center">
 
-**OpenFilm AI** — Treating AI filmmaking as a state management problem, not a prompting problem.
+**OpenFilm AI** — Hierarchical State Injection for AI filmmaking. Zero latent drift. Infinite runtime.
 
 </div>
