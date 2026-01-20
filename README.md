@@ -1,322 +1,372 @@
 # OpenFilm AI
 
-A professional scene orchestrator and shot planner for AI filmmaking. Design complete scenes with an AI cinematographer, lock character appearances per scene, and generate shot lists with automatic visual consistency.
+<div align="center">
 
-Built with Electron, React, and Python, featuring scene-based editing, character management, and integration with leading AI providers.
+### Agentic Shot Orchestration for AI Filmmaking
 
----
+*A state-management engine for video generation that treats film production as a graph of inherited context, not a single prompt.*
 
-## Scene Orchestration Workflow
+<!-- TODO: Add hero GIF showing context inheritance in action -->
+<!-- ![Context Inheritance Demo](docs/assets/inheritance-demo.gif) -->
 
-```
-Global Characters → Scene Setup → Shot Planning → Generation
-```
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![React 18](https://img.shields.io/badge/react-18-61dafb.svg)](https://reactjs.org/)
+[![Electron](https://img.shields.io/badge/electron-desktop-47848f.svg)](https://www.electronjs.org/)
 
-### 1. Global Characters
-Define your cast once. Upload reference images that establish each character's identity across your entire project.
-
-### 2. Scene Setup
-For each scene, the AI cinematographer analyzes your description and proposes:
-- **Scene setting** — location, time of day, lighting, atmosphere
-- **Character appearances** — wardrobe, hair, makeup specific to this scene
-- **Visual style** — color palette, camera style, cinematography notes
-
-Generate and approve a **master scene image** that locks the visual foundation. Then generate **scene-specific character references** using both the global character refs and the scene setting for consistency.
-
-### 3. Shot Planning
-The AI generates a complete shot list with:
-- Camera angles and framing
-- Subject and action descriptions
-- Dialogue assignments
-- Pre-written image generation prompts
-
-Each shot inherits:
-- Scene master images (setting consistency)
-- Scene character references (wardrobe/appearance consistency)
-- Previous shot frames (continuity between cuts)
-
-### 4. Generation
-Generate images, audio, and video per shot. The system automatically injects the appropriate references at each step.
+</div>
 
 ---
 
-## Features
+## The Problem
 
-- **AI Video Generation**: Generate videos using Replicate (Veo 3.1) or Google Vertex AI
-- **AI Shot Planning**: Claude or GPT-4 analyzes scenes and generates comprehensive shot lists
-- **Text-to-Speech & Voice Conversion**: ElevenLabs integration for natural voice generation
-- **Lip-Sync**: WaveSpeed InfiniteTalk for talking avatar videos
-- **Scene-Based Editing**: Organize your project into scenes and shots
-- **Character Management**: Store character profiles with reference images and voice IDs
-- **Progressive Consistency**: Wide shots anchor the look, each shot references the previous
-- **Media Library**: Manage all your generated assets in one place
-- **Smooth Transitions**: Optical flow smoothing between clips for seamless continuity
+Current AI video generators are powerful but stateless. Each generation starts from scratch with no memory of previous shots. Trying to generate a 2-minute scene in one prompt produces inconsistent characters, drifting art styles, and broken continuity.
 
----
+**The industry approach**: Fine-tune LoRAs, pray for consistency, manually fix drift in post.
 
-## Prerequisites
-
-Before you begin, make sure you have the following installed:
-
-- **Node.js** (v18 or higher) - [Download](https://nodejs.org/)
-- **Python** (3.9 or higher) - [Download](https://www.python.org/downloads/)
-- **ffmpeg** - Required for audio/video processing (including ffprobe for metadata)
-
-### Installing ffmpeg
-
-**macOS:**
-```bash
-brew install ffmpeg
-```
-
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt-get update
-sudo apt-get install ffmpeg
-```
-
-**Windows:**
-Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to your PATH.
-
-Verify installation:
-```bash
-ffmpeg -version
-ffprobe -version
-```
-
----
-
-## Installation
-
-### 1. Clone the Repository
-
-```bash
-git clone <repository-url>
-cd openfilmai
-```
-
-### 2. Install Node.js Dependencies
-
-```bash
-npm install
-```
-
-This installs all frontend dependencies including Electron, React, and build tools.
-
-### 3. Set Up Python Virtual Environment
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-### 4. Install Python Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-This installs:
-- FastAPI (backend server)
-- Uvicorn (ASGI server)
-- MoviePy (video editing)
-- Google Cloud libraries (for Vertex AI)
-- Other required packages
-
----
-
-## Running the Application
-
-### Development Mode (One Command)
-
-```bash
-npm run dev
-```
-
-This single command starts everything:
-1. Python backend server on `http://127.0.0.1:8000`
-2. Vite frontend dev server on `http://localhost:5173`
-3. Electron desktop window (opens automatically when servers are ready)
-
-The app will automatically reload when you make code changes.
-
-### Production Build
-
-```bash
-npm run build
-npm start
-```
-
----
-
-## API Setup
-
-OpenFilm AI integrates with multiple AI providers. You'll need API keys or credentials for the services you want to use. All credentials are stored locally and never shared.
-
-### Accessing Settings
-
-1. Launch the application
-2. Click the **Settings** button (gear icon) in the top-right corner
-3. Enter your API keys and credentials in the settings dialog
-4. Click **Save** to store your credentials
-
-### Replicate API
-
-**What it's used for:**
-- Video generation (Veo 3.1, etc.)
-- Image generation (Seedream-4, etc.)
-
-**Setup:**
-1. Sign up at [replicate.com](https://replicate.com)
-2. Go to your account settings
-3. Copy your API token
-4. Paste it into the "Replicate API Token" field in Settings
-
-### Anthropic / OpenAI API (AI Cinematographer)
-
-**What it's used for:**
-- Scene analysis and shot planning
-- Auto-generating shot lists from scene descriptions
-- Character appearance proposals
-
-**Setup:**
-1. Sign up at [anthropic.com](https://anthropic.com) or [openai.com](https://openai.com)
-2. Get your API key
-3. Paste it into the appropriate field in Settings
-4. Select your preferred LLM provider
-
-### ElevenLabs API
-
-**What it's used for:** Text-to-speech and voice-to-voice conversion
-
-**Setup:**
-1. Sign up at [elevenlabs.io](https://elevenlabs.io)
-2. Navigate to your profile settings
-3. Copy your API key
-4. Paste it into the "ElevenLabs API Key" field in Settings
-
-### WaveSpeed API
-
-**What it's used for:** Lip-sync generation (talking avatar videos from image + audio)
-
-**Setup:**
-1. Sign up at [wavespeed.ai](https://wavespeed.ai)
-2. Get your API key from the dashboard
-3. Paste it into the "Wavespeed API Key" field in Settings
-
-### Google Vertex AI (Optional)
-
-**What it's used for:** Google Cloud Veo 3.1 video generation with GCS storage
-
-**Setup:**
-
-1. **Create a Google Cloud Project:**
-   - Go to [Google Cloud Console](https://console.cloud.google.com)
-   - Create a new project or select an existing one
-   - Note your Project ID
-
-2. **Enable Required APIs:**
-   - Enable "Vertex AI API"
-   - Enable "Cloud Storage API"
-
-3. **Create a Service Account:**
-   - Go to IAM & Admin → Service Accounts
-   - Click "Create Service Account"
-   - Give it a name (e.g., "openfilmai-service")
-   - Grant roles: "Vertex AI User" and "Storage Admin"
-   - Click "Done"
-
-4. **Download Service Account Key:**
-   - Click on the service account you just created
-   - Go to the "Keys" tab
-   - Click "Add Key" → "Create new key"
-   - Choose JSON format
-   - Save the JSON file to a secure location on your computer
-
-5. **Create a GCS Bucket (Optional but Recommended):**
-   - Go to Cloud Storage → Buckets
-   - Click "Create Bucket"
-   - Choose a unique name
-   - Select a location (e.g., `us-central1`)
-   - Choose "Standard" storage class
-
-6. **Configure in OpenFilm AI:**
-   - **Vertex Service Account JSON Path**: Full path to the JSON key file
-   - **Vertex Project ID**: Your Google Cloud project ID
-   - **Vertex Location**: Usually `us-central1`
-   - **Vertex Temp GCS Bucket**: The bucket name you created
-
----
-
-## Usage Guide
-
-### Scene Setup Workflow
-
-1. **Create scene** — Add title and description
-2. **AI Assist** — Click to analyze scene and auto-fill:
-   - Visual style, color palette, camera approach
-   - Character appearances and wardrobe for this scene
-   - Establishing shot prompts
-3. **Generate scene image** — Create master reference, accept/reject until satisfied
-4. **Generate character refs** — For each cast member, generate scene-locked appearance
-5. **Plan shots** — Open AI Shot Planner, auto-generates shot list from scene context
-
-### Shot Generation
-
-Each shot card shows:
-- Shot number, camera angle, subject, action
-- Characters in frame
-- Dialogue (if any)
-- Generation buttons: Image → Audio → Video/Lip-sync
-
-Clicking "Gen Image" auto-injects:
-- Scene master images
-- Scene character references (or global refs as fallback)
-- Wide shot references for consistency
-- Previous shot's last frame for continuity
-
-### Managing Characters
-
-Characters help maintain consistency across your project:
-
-1. Create a character with a name
-2. Upload 1-3 reference images (global identity)
-3. Set a voice ID (from ElevenLabs)
-4. In each scene, generate scene-specific character refs for wardrobe/appearance
-
-### How Smoothing Works
-
-OpenFilm AI includes a smoothing feature to create seamless transitions between clips.
-
-**How to use it:**
-1. On the timeline, you'll see a small arrow `→` between two adjacent clips
-2. Click the **"Smooth"** checkbox in the transition bar
-3. Click **"Apply"**
-
-**What happens under the hood:**
-1. The app takes the last few frames of Clip A and the first few frames of Clip B
-2. It uses OpenCV's DIS optical flow algorithm to analyze the motion
-3. It generates intermediate frames to blend the motion seamlessly
-4. The result is a merged video file that replaces the original two clips
+**Our approach**: Treat filmmaking as a **directed graph of inherited state**. Each shot is a node that inherits context from its parent nodes—scene settings, character references, and the previous shot's end frame. The AI orchestrator ensures every generation receives exactly the context it needs.
 
 ---
 
 ## Architecture
 
-**Scene Hierarchy:**
-```
-Project
-└── Characters (global identity refs)
-└── Scenes
-    ├── Scene Settings (master images, visual style)
-    ├── Scene Cast (scene-specific character refs)
-    └── Shots (inherit all above)
+```mermaid
+graph TD
+    subgraph "Global State"
+        A[Cast Registry] -->|Character Identity| B
+        A -->|Voice Profiles| V[ElevenLabs TTS]
+    end
+
+    subgraph "Scene State"
+        B[Scene Context] -->|Visual Style Lock| C
+        B -->|Lighting/Tone| C
+        M[Master Scene Images] -->|Setting Reference| C
+        SC[Scene-Specific Character Refs] -->|Wardrobe Lock| C
+    end
+
+    subgraph "Agentic Orchestration"
+        C{AI Director} -->|Gemini Video Analysis| D
+        D[Shot Planner] -->|Shot 1| E
+        D -->|Shot 2| E
+        D -->|Shot N| E
+    end
+
+    subgraph "Generative Pipeline"
+        E[Context Injection] -->|Refs + Prompts| F[Image Gen]
+        F -->|Start Frame| G[Video Gen]
+        G -->|End Frame| E
+        V -->|Audio| L[Lip-Sync]
+        F -->|Face Image| L
+    end
 ```
 
-**Progressive Consistency:**
-- Wide/establishing shots serve as anchors
-- Each shot can reference the previous shot's last frame
-- Scene refs propagate to all shots automatically
+### The Core Insight
+
+Instead of asking an AI to generate an entire scene, we decompose filmmaking into the same workflow human filmmakers use:
+
+1. **Lock the look** — Establish visual style, lighting, and character appearances at the scene level
+2. **Plan the coverage** — Generate a shot list with camera angles, subjects, and actions
+3. **Shoot progressively** — Generate each shot with full context inheritance from previous shots
+4. **Maintain continuity** — Use the end frame of Shot N as the start frame for Shot N+1
+
+This isn't a prompt template. It's a **context propagation engine** that ensures every AI call receives exactly the visual references needed for consistency.
+
+---
+
+## Key Capabilities
+
+### Inheritance-Based Context Injection
+
+Every shot automatically inherits:
+
+```typescript
+interface ShotContext {
+  // Scene-level inheritance
+  scene_master_images: string[];     // Setting/location lock
+  scene_character_refs: string[];    // Wardrobe/appearance lock
+  visual_style: string;              // Color palette, camera style
+
+  // Shot-level continuity
+  previous_shot_end_frame: string;   // Optical flow anchor
+  previous_shot_id: string;          // Graph linkage for context chain
+
+  // Character-level identity
+  global_character_refs: string[];   // Fallback identity (no scene-specific ref)
+  voice_id: string;                  // ElevenLabs voice profile
+}
+```
+
+The system resolves inheritance at generation time—you define refs once, and they propagate automatically.
+
+### AI Director: Video-Aware Shot Planning
+
+The AI Director watches your previous shot's video using **Gemini 2.0 Flash** and plans the next shot with full visual understanding:
+
+```mermaid
+graph LR
+    A[Previous Shot Video] -->|Gemini Analysis| B[Character Positions]
+    A -->|Frame-by-Frame| C[Scene Geography]
+    B --> D[Next Shot Plan]
+    C --> D
+    D -->|Image Prompt| E[Exact Positioning]
+    D -->|Video Prompt| F[Motion Continuity]
+```
+
+**Multi-video context**: Send multiple prior shots to Gemini for narrative understanding. The AI sees the scene's visual flow, not just text descriptions.
+
+### Progressive Shot Chain
+
+```
+Shot 1 (Wide)     Shot 2 (Medium)    Shot 3 (Close-up)
+    │                  │                   │
+    ▼                  ▼                   ▼
+┌─────────┐      ┌─────────┐        ┌─────────┐
+│ Generate│      │ Generate│        │ Generate│
+│  Image  │      │  Image  │        │  Image  │
+└────┬────┘      └────┬────┘        └────┬────┘
+     │                │                   │
+     ▼                ▼                   ▼
+┌─────────┐      ┌─────────┐        ┌─────────┐
+│ Generate│──────│ Generate│────────│ Generate│
+│  Video  │ end  │  Video  │  end   │  Video  │
+└─────────┘frame └─────────┘ frame  └─────────┘
+              ▲                  ▲
+              │                  │
+         Start Frame        Start Frame
+         Continuity         Continuity
+```
+
+Each video generation can use the **last frame of the previous shot as its start frame**, creating seamless visual continuity without manual frame extraction.
+
+### Supported Generation Models
+
+| Type | Models | Provider |
+|------|--------|----------|
+| **Image** | NanoBanana (14-image reference), Seedream 4/4.5, Flux | Replicate |
+| **Video** | Veo 3.1, Kling 2.5, Seedance | Vertex AI, Replicate |
+| **Voice** | 29+ voices, voice cloning | ElevenLabs |
+| **Lip-Sync** | InfiniteTalk | WaveSpeed |
+
+### Audio-Driven Animation Pipeline
+
+```
+Text ──► ElevenLabs TTS ──► Audio Track
+                               │
+Character Ref Image ───────────┼──► WaveSpeed Lip-Sync ──► Talking Video
+                               │
+Scene Context ─────────────────┘
+```
+
+Generate dialogue audio, then animate character reference images with synchronized lip movement.
+
+---
+
+## Data Model
+
+The data model is the foundation of consistency. Every entity maintains references that enable context resolution at generation time.
+
+### Scene State
+
+```python
+class Scene:
+    scene_id: str
+    title: str
+    description: str                    # Full scene description for AI planning
+
+    # Visual State Lock
+    master_image_ids: List[str]         # Scene setting references
+    visual_style: str                   # "moody period drama, painterly chiaroscuro"
+    color_palette: str                  # "warm candlelight, deep shadows, muted creams"
+    camera_style: str                   # "locked-off tripod, slow dolly-ins"
+
+    # Character State
+    cast: List[SceneCast]               # Characters with scene-specific appearances
+
+    # Shot Graph
+    shots: List[Shot]                   # Ordered shot list with inheritance chain
+```
+
+### Scene Cast (Character-Scene Binding)
+
+```python
+class SceneCast:
+    character_id: str                   # Links to global character
+    appearance_notes: str               # "Wearing dark navy suit, white cravat"
+    scene_reference_ids: List[str]      # Scene-locked appearance refs
+    # Falls back to global character refs if scene_reference_ids is empty
+```
+
+### Shot (Generation Unit)
+
+```python
+class Shot:
+    shot_id: str
+    shot_number: int
+
+    # Planning
+    camera_angle: str                   # "Close-up", "Wide", "Over-the-shoulder"
+    subject: str                        # "The physician"
+    action: str                         # "turns sharply toward the door"
+    characters_in_shot: List[str]       # ["physician", "male_guardian"]
+    dialogue: Optional[str]             # Dialogue for this shot
+
+    # Generation
+    prompt: str                         # Full image/video generation prompt
+    start_frame_path: Optional[str]     # Continuity anchor (prev shot's end frame)
+
+    # Outputs
+    image_path: Optional[str]           # Generated still frame
+    audio_path: Optional[str]           # Generated dialogue audio
+    file_path: Optional[str]            # Generated video
+
+    # Continuity Graph
+    status: Literal["planned", "image_ready", "audio_ready", "video_ready"]
+```
+
+### The Inheritance Resolution Algorithm
+
+When generating Shot N:
+
+```python
+def resolve_shot_context(shot, scene, project):
+    context = {}
+
+    # 1. Scene-level refs (always included)
+    context["master_refs"] = scene.master_image_ids
+    context["style"] = f"{scene.visual_style}. {scene.color_palette}. {scene.camera_style}"
+
+    # 2. Character refs (scene-specific > global fallback)
+    for char_id in shot.characters_in_shot:
+        cast_entry = scene.cast.find(char_id)
+        if cast_entry and cast_entry.scene_reference_ids:
+            context["char_refs"][char_id] = cast_entry.scene_reference_ids
+        else:
+            global_char = project.characters.find(char_id)
+            context["char_refs"][char_id] = global_char.reference_image_ids
+
+    # 3. Continuity chain (previous shot's end frame)
+    prev_shot = scene.shots[shot.shot_number - 2]  # 0-indexed
+    if prev_shot and prev_shot.file_path:
+        context["start_frame"] = extract_last_frame(prev_shot.file_path)
+
+    return context
+```
+
+---
+
+## Workflow
+
+### Phase 1: Global Cast Setup
+
+Define characters once with identity references that persist across all scenes.
+
+```
+┌─────────────────────────────────────┐
+│  CHARACTER: "The Physician"         │
+├─────────────────────────────────────┤
+│  Reference Images: 2                │
+│  ┌─────┐ ┌─────┐                    │
+│  │ IMG │ │ IMG │                    │
+│  └─────┘ └─────┘                    │
+│  Voice: ElevenLabs "British Male"   │
+│  Style Tokens: "40s, receding       │
+│  hairline, concerned expression"    │
+└─────────────────────────────────────┘
+```
+
+### Phase 2: Scene State Configuration
+
+For each scene, lock the visual style and character appearances.
+
+1. **AI Scene Analysis** — Claude/GPT analyzes your scene description and proposes:
+   - Visual style, color palette, camera approach
+   - Character wardrobe and appearance for this scene
+   - Location and lighting notes
+
+2. **Master Scene Image** — Generate and approve a reference image that locks the setting
+
+3. **Scene Character Refs** — Generate scene-specific character images showing wardrobe/appearance
+   - Best practice: Generate on **neutral backgrounds** to avoid location bleed
+
+### Phase 3: Agentic Shot Orchestration
+
+The AI cinematographer generates a complete shot list:
+
+```json
+[
+  {
+    "shot_number": 1,
+    "camera_angle": "Wide",
+    "subject": "The bedroom",
+    "action": "Establishing shot of the candlelit chamber",
+    "characters_in_shot": ["aubrey", "physician"],
+    "dialogue": null
+  },
+  {
+    "shot_number": 2,
+    "camera_angle": "Medium Close-up",
+    "subject": "The physician",
+    "action": "Leans forward, examining the patient",
+    "characters_in_shot": ["physician"],
+    "dialogue": "The fever has broken, but he remains weak."
+  }
+]
+```
+
+### Phase 4: Progressive Generation
+
+For each shot:
+
+1. **Generate Image** — System auto-injects scene refs + character refs + style tokens
+2. **Generate Audio** — ElevenLabs TTS with character's voice profile
+3. **Generate Video** — Image-to-video with previous shot's end frame as start frame
+4. **Optional: Lip-Sync** — WaveSpeed animation for dialogue shots
+
+### Phase 5: Assembly
+
+- **Timeline View** — Arrange shots, preview playback
+- **Optical Flow Smoothing** — AI-generated transitions between clips
+- **Export** — Concatenate shots into final scene video
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+
+- Python 3.9+
+- ffmpeg (with ffprobe)
+
+### Installation
+
+```bash
+# Clone
+git clone https://github.com/your-org/openfilmai.git
+cd openfilmai
+
+# Frontend dependencies
+npm install
+
+# Python environment
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# Run (starts backend + frontend + Electron)
+npm run dev
+```
+
+### API Keys Required
+
+Configure in Settings (gear icon):
+
+| Service | Purpose | Required |
+|---------|---------|----------|
+| **Replicate** | Image/video generation (NanoBanana, Kling, Seedance) | Yes |
+| **Anthropic** or **OpenAI** | Shot planning, scene analysis | Yes |
+| **ElevenLabs** | Text-to-speech, voice cloning | For audio |
+| **WaveSpeed** | Lip-sync animation | For talking heads |
+| **Google Vertex AI** | Veo 3.1, Gemini 2.0 Flash | For AI Director |
 
 ---
 
@@ -324,153 +374,105 @@ Project
 
 ```
 openfilmai/
-├── frontend/              # React + TypeScript frontend
-│   ├── src/
-│   │   ├── App.tsx       # Main application component
-│   │   └── ...
-│   └── vite.config.ts    # Vite configuration
-├── backend/              # Python FastAPI backend
-│   ├── main.py          # Main server file
-│   ├── ai/              # AI provider clients
-│   │   └── cinematographer.py  # Shot planning AI
-│   ├── video/           # Video processing (FFmpeg, OpenCV)
-│   └── storage/         # File and metadata management
-├── project_data/        # User projects and media (created at runtime)
-├── electron.js          # Electron main process
-├── package.json         # Node.js dependencies
-└── requirements.txt     # Python dependencies
+├── frontend/                    # React + TypeScript UI
+│   └── src/App.tsx             # Main application (6000+ lines)
+├── backend/
+│   ├── main.py                 # FastAPI server, all endpoints
+│   ├── ai/
+│   │   ├── cinematographer.py  # Shot planning prompts
+│   │   ├── vertex_client.py    # Veo 3.1 + Gemini AI Director
+│   │   └── replicate_client.py # NanoBanana, Kling, Seedance
+│   ├── video/
+│   │   └── editor.py           # Frame extraction, optical flow
+│   └── storage/
+│       └── files.py            # Metadata persistence
+├── project_data/               # User projects (created at runtime)
+├── electron.js                 # Desktop shell
+└── requirements.txt
 ```
 
 ---
 
-## Integrating Custom Models
+## Technical Details
 
-### Adding a Replicate Model
+### Context Injection Points
 
-For simple integrations, add the model ID string (e.g., `owner/model-name`) to the frontend dropdown — the Replicate client is generic.
+| Generation Type | Injected Context |
+|-----------------|------------------|
+| **Image** | Scene master refs, character refs (up to 14 for NanoBanana), style tokens |
+| **Video** | Start frame (prev shot's last frame), prompt, aspect ratio |
+| **AI Director** | Multiple prior shot videos, character ref images, scene description |
+| **Lip-Sync** | Character face image, audio track |
 
-### Adding a Local Model (Advanced)
+### Frame Extraction
 
-1. **Backend Integration:**
-   - Navigate to `backend/ai/`
-   - Create a new client file (e.g., `my_model_client.py`)
-   - Look at `replicate_client.py` for reference
-   - Register your new client in `backend/main.py`
+When a video completes generation, the system automatically extracts:
+- **First frame** — For reference/thumbnails
+- **Last frame** — For next shot's start frame continuity
 
-2. **Frontend UI:**
-   - In `frontend/src/App.tsx`, add your model to the dropdown
-   - Ensure the backend `generate_shot` endpoint handles the new model
-
----
-
-## Data Model Reference
-
-**Scene:**
 ```python
-scene_id, title, description, location_notes
-master_image_ids: List[str]  # Scene setting refs
-cast: List[SceneCast]        # Characters + scene appearances
-shots: List[Shot]
-visual_style, color_palette, camera_style, tone_notes
+# Automatic extraction on video completion
+first_frame = extract_frame(video_path, "00:00:00.000")
+last_frame = extract_frame(video_path, duration - 0.1)
 ```
 
-**SceneCast:**
-```python
-character_id: str
-appearance_notes: str         # AI-generated wardrobe/look
-scene_reference_ids: List[str]  # Scene-locked character refs
+### Optical Flow Smoothing
+
+For transitions between shots, DIS (Dense Inverse Search) optical flow generates intermediate frames:
+
 ```
-
-**Shot:**
-```python
-shot_id, shot_number, camera_angle, subject, action, dialogue
-characters_in_shot: List[str]
-prompt: str                   # Image generation prompt
-start_frame_path, audio_path, file_path
-status: "planned" | "image_ready" | "audio_ready" | "video_ready"
-```
-
----
-
-## Troubleshooting
-
-### Backend Won't Start
-
-- Make sure Python virtual environment is activated: `source .venv/bin/activate`
-- Check if port 8000 is already in use: `lsof -i :8000` (macOS/Linux)
-- Verify all Python dependencies are installed: `pip install -r requirements.txt`
-- Check Python version: `python3 --version` (should be 3.9+)
-
-### Frontend Won't Load
-
-- Make sure the backend is running first (check `http://127.0.0.1:8000/health`)
-- Check if port 5173 is available: `lsof -i :5173`
-- Check the Electron console for errors (View → Toggle Developer Tools)
-
-### ffmpeg Not Found
-
-- Verify ffmpeg is installed: `ffmpeg -version`
-- Verify `ffprobe` is also installed: `ffprobe -version`
-- Make sure ffmpeg is in your PATH
-
-### API Generation Fails
-
-- **Check API Keys:** Verify your API keys are correct in Settings
-- **Check Credits:** Some APIs have usage limits or require payment
-- **Check Logs:** Look at the backend console for detailed error messages
-
-### Vertex AI / GCS Errors
-
-- **Service Account:** Verify the JSON file path is correct and the file exists
-- **Permissions:** Ensure the service account has "Vertex AI User" and "Storage Admin" roles
-- **APIs Enabled:** Check that Vertex AI API and Cloud Storage API are enabled
-
-### Port Already in Use
-
-```bash
-# macOS/Linux
-kill -9 $(lsof -t -i:8000)
-kill -9 $(lsof -t -i:5173)
-
-# Windows
-taskkill /PID <process_id> /F
+Clip A Last Frames ──► Optical Flow ──► Interpolated Frames ──► Clip B First Frames
 ```
 
 ---
 
 ## Environment Variables
 
-You can set API keys via environment variables:
-
 ```bash
-export REPLICATE_API_TOKEN="your-token"
-export ELEVENLABS_API_KEY="your-key"
-export WAVESPEED_API_KEY="your-key"
-export ANTHROPIC_API_KEY="your-key"
-export OPENAI_API_KEY="your-key"
+# API Keys
+export REPLICATE_API_TOKEN="r8_..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+export ELEVENLABS_API_KEY="..."
+export WAVESPEED_API_KEY="..."
+
+# Google Cloud (for Vertex AI / Veo 3.1)
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 export VERTEX_LOCATION="us-central1"
-export VERTEX_TEMP_BUCKET="your-bucket-name"
+export VERTEX_TEMP_BUCKET="your-gcs-bucket"
 ```
+
+---
+
+## Roadmap
+
+- [ ] **Batch generation** — Queue multiple shots for overnight rendering
+- [ ] **Version control** — Track shot iterations, revert to previous takes
+- [ ] **Multi-scene projects** — Scene graph with cross-scene character consistency
+- [ ] **Export presets** — Direct export to timeline formats (Premiere XML, DaVinci)
+- [ ] **Audio ducking** — Automatic dialogue/music mixing
 
 ---
 
 ## Contributing
 
-This is an open-source project. Contributions are welcome.
+This is an open-source project. Contributions welcome.
 
 1. Fork the repository
 2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+3. Submit a pull request
 
 ---
 
 ## License
 
-TBD
+MIT
 
 ---
 
-Built for filmmakers who need systematic control over AI-generated visual consistency.
+<div align="center">
+
+**OpenFilm AI** — Treating AI filmmaking as a state management problem, not a prompting problem.
+
+</div>

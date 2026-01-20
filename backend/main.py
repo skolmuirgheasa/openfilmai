@@ -106,6 +106,37 @@ async def serve_files_head(full_path: str):
         }
     )
 
+class RevealFileRequest(BaseModel):
+    path: str
+
+@app.post("/system/reveal-file")
+def reveal_file_in_finder(req: RevealFileRequest):
+    """Open file location in system file browser (Finder on macOS)."""
+    import subprocess
+    import platform
+
+    # Resolve path
+    if req.path.startswith("project_data/"):
+        file_path = PROJECT_DATA_DIR / req.path.replace("project_data/", "")
+    else:
+        file_path = Path(req.path)
+
+    if not file_path.exists():
+        return {"status": "error", "detail": "File not found"}
+
+    try:
+        system = platform.system()
+        if system == "Darwin":  # macOS
+            subprocess.run(["open", "-R", str(file_path)], check=True)
+        elif system == "Windows":
+            subprocess.run(["explorer", "/select,", str(file_path)], check=True)
+        else:  # Linux
+            subprocess.run(["xdg-open", str(file_path.parent)], check=True)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @app.on_event("startup")
 async def startup_event():
     """Load persisted jobs on startup"""
@@ -264,6 +295,15 @@ def generate_shot(req: ShotGenerateRequest):
     logger.info(f"[GENERATE] shot_id={shot_id}, is_update={is_update}, media_type={req.media_type}")
     try:
         if (req.provider or "").lower() == "vertex":
+            print("=" * 60)
+            print("[VERTEX REQUEST] Received from frontend:")
+            print(f"  provider: {req.provider}")
+            print(f"  model: {req.model}")
+            print(f"  start_frame_path: {req.start_frame_path}")
+            print(f"  end_frame_path: {req.end_frame_path}")
+            print(f"  reference_images: {req.reference_images}")
+            print(f"  reference_frame: {req.reference_frame}")
+            print("=" * 60)
             s = read_settings()
             cred = s.get("vertex_service_account_path")
             pid = s.get("vertex_project_id")
@@ -293,7 +333,15 @@ def generate_shot(req: ShotGenerateRequest):
                     end_img = str(Path.cwd() / end_img)
             ref_imgs = req.reference_images
             if ref_imgs:
+                print(f"[VERTEX] Reference images before path normalization: {ref_imgs}")
                 ref_imgs = [str(Path.cwd() / r) if not Path(r).is_absolute() else r for r in ref_imgs]
+                print(f"[VERTEX] Reference images after path normalization: {ref_imgs}")
+                # Verify files exist
+                for rp in ref_imgs:
+                    exists = Path(rp).exists()
+                    print(f"[VERTEX]   {rp} -> exists={exists}")
+            else:
+                print("[VERTEX] No reference_images provided from frontend")
             output_url = client_v.generate_video(
                 prompt=req.prompt,
                 first_frame_image=start_img,
@@ -1190,6 +1238,8 @@ class AIShotPlanRequest(BaseModel):
     scene_id: str
     shot_id: str  # The shot we're planning
     prev_video_path: str  # Path to the previous shot's video
+    additional_video_paths: Optional[List[str]] = None  # Additional prior shot videos for context
+    selected_ref_ids: Optional[List[str]] = None  # User-selected reference image IDs (if None, use all)
 
 
 @app.post("/ai/plan-shot-from-video")
@@ -1214,6 +1264,16 @@ def plan_shot_from_video(req: AIShotPlanRequest):
     if not video_full_path.exists():
         return {"status": "error", "detail": f"Video file not found: {req.prev_video_path}"}
 
+    # Resolve additional video paths (for multi-video context)
+    additional_video_full_paths: List[str] = []
+    if req.additional_video_paths:
+        for vp in req.additional_video_paths:
+            full_path = PROJECT_DATA_DIR / vp.replace("project_data/", "")
+            if full_path.exists():
+                additional_video_full_paths.append(str(full_path))
+            else:
+                print(f"[AI DIRECTOR] Skipping missing additional video: {vp}")
+
     # Get scene info
     scene = get_scene(req.project_id, req.scene_id)
     if not scene:
@@ -1226,6 +1286,105 @@ def plan_shot_from_video(req: AIShotPlanRequest):
 
     # Get all characters
     characters = list_characters(req.project_id)
+
+    # Get scene cast (which characters are IN this scene)
+    scene_cast = scene.get("cast", [])
+    cast_character_ids = [c.get("character_id") for c in scene_cast]
+
+    # Build character reference images dict: {character_name: [image_paths]}
+    # If user selected specific refs, use ONLY those
+    character_ref_images: Dict[str, List[str]] = {}
+    all_media = list_media(req.project_id)  # Get media once, outside the loop
+
+    # Log what we received
+    print(f"[AI DIRECTOR] selected_ref_ids from frontend: {req.selected_ref_ids}")
+
+    if req.selected_ref_ids:
+        # User selected specific images - use ONLY those
+        print(f"[AI DIRECTOR] Using ONLY user-selected refs: {req.selected_ref_ids}")
+
+        # Build reverse lookup: media_id -> character_name
+        media_to_character: Dict[str, str] = {}
+        for char in characters:
+            char_name = char.get("name", "Unknown")
+            char_id = char.get("character_id")
+
+            # Check global refs
+            for ref_id in char.get("reference_image_ids", []):
+                media_to_character[ref_id] = char_name
+
+            # Check scene-specific refs
+            cast_entry = next((c for c in scene_cast if c.get("character_id") == char_id), None)
+            if cast_entry:
+                for ref_id in cast_entry.get("scene_reference_ids", []):
+                    media_to_character[ref_id] = char_name
+
+        # Also check master images (scene-level refs without character)
+        master_image_ids = scene.get("master_image_ids", [])
+
+        # Now build character_ref_images from ONLY selected IDs
+        for ref_id in req.selected_ref_ids:
+            media_item = next((m for m in all_media if m.get("id") == ref_id), None)
+            if media_item and media_item.get("path"):
+                full_path = PROJECT_DATA_DIR / media_item["path"].replace("project_data/", "")
+                if full_path.exists():
+                    # Find which character this belongs to
+                    char_name = media_to_character.get(ref_id)
+                    if char_name:
+                        if char_name not in character_ref_images:
+                            character_ref_images[char_name] = []
+                        character_ref_images[char_name].append(str(full_path))
+                        print(f"[AI DIRECTOR] Added ref {ref_id} for {char_name}: {full_path}")
+                    elif ref_id in master_image_ids:
+                        # It's a master/scene image
+                        if "Scene Reference" not in character_ref_images:
+                            character_ref_images["Scene Reference"] = []
+                        character_ref_images["Scene Reference"].append(str(full_path))
+                        print(f"[AI DIRECTOR] Added scene master ref {ref_id}: {full_path}")
+                    else:
+                        # Unknown character - still include it
+                        if "Other" not in character_ref_images:
+                            character_ref_images["Other"] = []
+                        character_ref_images["Other"].append(str(full_path))
+                        print(f"[AI DIRECTOR] Added ref {ref_id} (no char match): {full_path}")
+    else:
+        # No user selection - use all character refs (legacy behavior)
+        print("[AI DIRECTOR] No selected_ref_ids - using ALL character refs (legacy)")
+        for char in characters:
+            char_name = char.get("name", "Unknown")
+            char_id = char.get("character_id")
+
+            # Check if character is in scene cast and has scene-specific refs
+            cast_entry = next((c for c in scene_cast if c.get("character_id") == char_id), None)
+            if cast_entry and cast_entry.get("scene_reference_ids"):
+                ref_ids = cast_entry["scene_reference_ids"]
+            else:
+                ref_ids = char.get("reference_image_ids", [])
+
+            # Resolve IDs to actual file paths
+            ref_paths = []
+            for ref_id in ref_ids[:2]:  # Limit to 2 refs per character to avoid token limits
+                # Look up media by ID
+                media_item = next((m for m in all_media if m.get("id") == ref_id), None)
+                if media_item and media_item.get("path"):
+                    full_path = PROJECT_DATA_DIR / media_item["path"].replace("project_data/", "")
+                    if full_path.exists():
+                        ref_paths.append(str(full_path))
+
+            if ref_paths:
+                character_ref_images[char_name] = ref_paths
+
+    print(f"[AI DIRECTOR] Final character_ref_images: {character_ref_images}")
+
+    # Build prior shots summary for narrative context
+    shots = scene.get("shots", [])
+    current_shot_idx = next((i for i, s in enumerate(shots) if s.get("shot_id") == req.shot_id), 0)
+    prior_shots_summary = []
+    for i, s in enumerate(shots[:current_shot_idx]):
+        summary = f"Shot {i+1}: {s.get('subject', 'Unknown')} - {s.get('action', 'No action')}"
+        if s.get('dialogue'):
+            summary += f" (Dialogue: \"{s['dialogue'][:50]}...\")" if len(s.get('dialogue', '')) > 50 else f" (Dialogue: \"{s['dialogue']}\")"
+        prior_shots_summary.append(summary)
 
     # Build scene context
     scene_context = scene.get("description", "")
@@ -1256,7 +1415,11 @@ def plan_shot_from_video(req: AIShotPlanRequest):
             scene_context=scene_context,
             next_shot_info=shot,
             available_characters=characters,
-            visual_style=visual_style
+            visual_style=visual_style,
+            character_ref_images=character_ref_images,
+            scene_cast_ids=cast_character_ids,
+            prior_shots_summary=prior_shots_summary,
+            additional_video_paths=additional_video_full_paths if additional_video_full_paths else None
         )
 
         if result.get("status") == "error":
@@ -1272,11 +1435,131 @@ def plan_shot_from_video(req: AIShotPlanRequest):
                 "video_prompt": result.get("video_prompt", ""),
                 "continuity_notes": result.get("continuity_notes", ""),
                 "reasoning": result.get("reasoning", "")
-            }
+            },
+            "prev_video_path": req.prev_video_path  # Include for frame extraction
         }
 
     except Exception as e:
         logger.error(f"AI shot planning failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "detail": str(e)}
+
+
+class ExtractRefFrameRequest(BaseModel):
+    project_id: str
+    scene_id: str
+    video_path: str
+    timestamp_seconds: float
+    description: str
+    frame_type: str  # "character" or "scene"
+    character_name: Optional[str] = None  # Required if frame_type is "character"
+    auto_add_to_refs: bool = True  # Whether to auto-add as scene-specific ref
+
+
+@app.post("/ai/extract-ref-frame")
+def extract_ref_frame(req: ExtractRefFrameRequest):
+    """
+    Extract a frame from a video at a specific timestamp and add it to the media library.
+    Optionally auto-adds it as a scene-specific reference for the character or scene.
+    """
+    from backend.video.ffmpeg import extract_frame_at_timestamp
+
+    # Resolve video path
+    video_full_path = PROJECT_DATA_DIR / req.video_path.replace("project_data/", "")
+    if not video_full_path.exists():
+        return {"status": "error", "detail": f"Video file not found: {req.video_path}"}
+
+    # Get scene
+    scene = get_scene(req.project_id, req.scene_id)
+    if not scene:
+        return {"status": "error", "detail": "Scene not found"}
+
+    # Generate UNIQUE output filename using epoch timestamp
+    import time as time_mod
+    epoch_ts = int(time_mod.time())
+    video_ts_str = f"{req.timestamp_seconds:.2f}".replace(".", "_")
+    if req.frame_type == "character" and req.character_name:
+        # Sanitize character name for filename
+        safe_char_name = "".join(c if c.isalnum() else "_" for c in req.character_name)
+        filename = f"{epoch_ts}_ref_{safe_char_name}_{video_ts_str}.png"
+    else:
+        filename = f"{epoch_ts}_ref_scene_{video_ts_str}.png"
+
+    # Output path in media/images
+    dirs = media_dirs(req.project_id)
+    output_path = dirs["images"] / filename
+
+    try:
+        # Extract the frame
+        extract_frame_at_timestamp(str(video_full_path), req.timestamp_seconds, str(output_path))
+
+        # Add to media library
+        rel_path = str(output_path.relative_to(PROJECT_DATA_DIR))
+        media_item = add_media(req.project_id, {
+            "id": filename,
+            "type": "image",
+            "path": f"project_data/{rel_path}",
+            "url": f"/files/{rel_path}",
+            "source": "extracted_ref",
+            "description": req.description,
+            "from_video": req.video_path,
+            "extracted_timestamp": req.timestamp_seconds
+        })
+
+        result = {
+            "status": "ok",
+            "media_id": media_item.get("id"),
+            "path": media_item.get("path"),
+            "url": media_item.get("url")
+        }
+
+        # Auto-add to scene-specific refs if requested
+        if req.auto_add_to_refs:
+            meta = read_metadata(req.project_id)
+
+            if req.frame_type == "character" and req.character_name:
+                # Find the character by name
+                characters = meta.get("characters", [])
+                char = next((c for c in characters if c.get("name") == req.character_name), None)
+
+                if char:
+                    char_id = char.get("character_id")
+                    # Find scene and update cast's scene_reference_ids
+                    for s in meta.get("scenes", []):
+                        if s.get("scene_id") == req.scene_id:
+                            cast = s.setdefault("cast", [])
+                            # Find or create cast entry for this character
+                            cast_entry = next((c for c in cast if c.get("character_id") == char_id), None)
+                            if cast_entry:
+                                scene_refs = cast_entry.setdefault("scene_reference_ids", [])
+                                if media_item.get("id") not in scene_refs:
+                                    scene_refs.append(media_item.get("id"))
+                            else:
+                                # Create new cast entry
+                                cast.append({
+                                    "character_id": char_id,
+                                    "scene_reference_ids": [media_item.get("id")]
+                                })
+                            write_metadata(req.project_id, meta)
+                            result["added_to_character_refs"] = req.character_name
+                            break
+
+            elif req.frame_type == "scene":
+                # Add to scene master_image_ids
+                for s in meta.get("scenes", []):
+                    if s.get("scene_id") == req.scene_id:
+                        master_ids = s.setdefault("master_image_ids", [])
+                        if media_item.get("id") not in master_ids:
+                            master_ids.append(media_item.get("id"))
+                        write_metadata(req.project_id, meta)
+                        result["added_to_scene_masters"] = True
+                        break
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Frame extraction failed: {e}")
         import traceback
         traceback.print_exc()
         return {"status": "error", "detail": str(e)}

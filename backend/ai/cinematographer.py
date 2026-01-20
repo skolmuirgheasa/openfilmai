@@ -49,20 +49,31 @@ Structure: [Subject] + [Action/Pose] + [Setting] + [Lighting] + [Style]
 ### CRITICAL: How to Reference Characters
 The AI image generator will receive REFERENCE IMAGES for characters. Your prompts MUST:
 1. Describe WHO the character is visually (not just their name)
-2. Explain how they appear in the reference images
-3. Describe their pose/action in THIS shot
+2. Reference their APPEARANCE from ref images (face, hair, build) - NOT their location in refs
+3. Describe their pose/action and POSITION in THIS shot
 
-GOOD prompt (explains character for ref image matching):
-"Wide shot of a Regency bedroom. A young man (Aubrey, as shown in reference images - pale, gaunt, dark curly hair) lies half-conscious in a canopied bed, wearing a loose white nightshirt. He is the figure from the character reference images. Soft morning light through curtains, muted color palette, photorealistic, 35mm film"
+**IMPORTANT**: Reference images may show characters in specific locations. The AI will try to recreate
+that location unless you EXPLICITLY override it. Focus on matching APPEARANCE, not background.
+
+GOOD prompt (matches appearance, specifies NEW position):
+"Wide shot of a Regency bedroom. A young man (matching the face and build in reference images - pale, gaunt, dark curly hair) lies half-conscious in a canopied bed in the CENTER of frame, wearing a loose white nightshirt. Soft morning light through curtains, muted color palette, photorealistic, 35mm film"
 
 BAD prompt (just uses name without description):
 "Aubrey lies in bed looking sick"
 
 ### Character Description Rules:
 - Always describe the character's appearance: "a young man with dark curly hair" not just "Aubrey"
-- Reference their ref images: "as shown in reference images" or "the figure from character references"
+- Reference their APPEARANCE from ref images: "matching the face/build in reference images"
 - Include costume/wardrobe for THIS scene
 - Describe physical state: "pale and gaunt", "exhausted", "alert"
+- ALWAYS specify their POSITION in the shot (left/center/right, foreground/background)
+
+### Ideal Character Reference Images
+For best results, character reference images should show ONLY the character on a NEUTRAL background:
+- No location/setting elements
+- Plain gray or white backdrop
+- Good lighting on face and costume
+- This prevents the AI from pulling in unwanted background elements
 
 ### CRITICAL: No Lip Movement / No Speaking
 - ALL prompts should show characters with CLOSED MOUTHS or neutral expressions

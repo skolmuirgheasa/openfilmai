@@ -179,7 +179,56 @@ export default function App() {
     video_prompt: string;
     continuity_notes: string;
     reasoning: string;
+    recommended_character_frames: Array<{
+      character_name: string;
+      timestamp_seconds: number;
+      description: string;
+      reason: string;
+    }>;
+    recommended_scene_frames: Array<{
+      timestamp_seconds: number;
+      description: string;
+      reason: string;
+    }>;
   } | null>(null);
+  const [aiDirectorVideoPath, setAIDirectorVideoPath] = useState<string | null>(null);
+  const [extractingFrames, setExtractingFrames] = useState<Set<string>>(new Set());
+  // Extracted frames from AI Director (shown as thumbnails)
+  const [aiDirectorExtractedFrames, setAIDirectorExtractedFrames] = useState<Array<{
+    id: string;
+    url: string;
+    path: string;
+    type: 'character' | 'scene';
+    characterName?: string;
+    timestamp: number;
+    description: string;
+  }>>([]);
+  const [aiDirectorUseExtractedRefs, setAIDirectorUseExtractedRefs] = useState<boolean>(true);
+  const [aiDirectorStep, setAIDirectorStep] = useState<'setup' | 'plan' | 'preview' | 'video'>('setup');
+  const [aiDirectorPreviewImage, setAIDirectorPreviewImage] = useState<string | null>(null);
+  const [aiDirectorVideoMode, setAIDirectorVideoMode] = useState<'start_frame' | 'ref_image'>('start_frame');
+  // AI Director model/ref selections
+  const [aiDirectorImageModel, setAIDirectorImageModel] = useState<string>('google/nano-banana');
+  const [aiDirectorVideoModel, setAIDirectorVideoModel] = useState<string>('google/veo-3.1');
+  const [aiDirectorVideoDuration, setAIDirectorVideoDuration] = useState<number>(8);
+  const [aiDirectorGenerateAudio, setAIDirectorGenerateAudio] = useState<boolean>(true);
+  // Editable prompts (initialized from Gemini, user can modify)
+  const [aiDirectorImagePrompt, setAIDirectorImagePrompt] = useState<string>('');
+  const [aiDirectorVideoPrompt, setAIDirectorVideoPrompt] = useState<string>('');
+  // Active reference IDs being used (scene masters + character refs, user can toggle)
+  const [aiDirectorActiveRefIds, setAIDirectorActiveRefIds] = useState<string[]>([]);
+  // Separate ref IDs for video generation (allows different refs per step)
+  const [aiDirectorVideoRefIds, setAIDirectorVideoRefIds] = useState<string[]>([]);
+  // Flow mode: image_first or skip_to_video
+  const [aiDirectorFlowMode, setAIDirectorFlowMode] = useState<'image_first' | 'skip_to_video'>('image_first');
+  // Additional prior shot videos to send to Gemini for context (indices of shots)
+  const [aiDirectorContextVideos, setAIDirectorContextVideos] = useState<number[]>([]);
+  // Video scrubber state for manual frame picking
+  const [scrubberTime, setScrubberTime] = useState<number>(0);
+  const [scrubberDuration, setScrubberDuration] = useState<number>(0);
+  const [scrubberAssignTo, setScrubberAssignTo] = useState<string>('scene'); // 'scene' or character name
+  const [scrubberSelectedShotIdx, setScrubberSelectedShotIdx] = useState<number | null>(null); // which shot's video to scrub
+  const scrubberVideoRef = React.useRef<HTMLVideoElement>(null);
   const [vxStartFromVideoId, setVxStartFromVideoId] = useState<string | null>(null);
   const [vxStartFramePath, setVxStartFramePath] = useState<string | null>(null);
   const [vxEndFromVideoId, setVxEndFromVideoId] = useState<string | null>(null);
@@ -4154,40 +4203,27 @@ export default function App() {
                         {idx > 0 && (sceneDetail?.shots || [])[idx - 1]?.file_path && (
                           <button
                             className="text-[8px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
-                            onClick={async (e) => {
+                            onClick={(e) => {
                               e.stopPropagation();
                               const prevShot = (sceneDetail?.shots || [])[idx - 1];
+                              // Reset all state and open in SETUP mode - don't call Gemini yet
                               setAIDirectorShotIdx(idx);
                               setAIDirectorPlan(null);
+                              setAIDirectorVideoPath(prevShot.file_path);
+                              setAIDirectorExtractedFrames([]);
+                              setAIDirectorUseExtractedRefs(true);
+                              setAIDirectorStep('setup'); // Start in setup mode
+                              setAIDirectorPreviewImage(null);
+                              setAIDirectorVideoMode('start_frame');
+                              setAIDirectorFlowMode('image_first');
+                              setAIDirectorVideoRefIds([]);
+                              setAIDirectorContextVideos([]);
+                              setAIDirectorActiveRefIds([]);
+                              setAIDirectorLoading(false);
+                              setAIDirectorImagePrompt('');
+                              setAIDirectorVideoPrompt('');
                               setIsAIDirectorOpen(true);
-                              setAIDirectorLoading(true);
-
-                              try {
-                                const res = await fetch('http://127.0.0.1:8000/ai/plan-shot-from-video', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({
-                                    project_id: projectId,
-                                    scene_id: selectedSceneId,
-                                    shot_id: sh.shot_id,
-                                    prev_video_path: prevShot.file_path
-                                  })
-                                });
-                                const data = await res.json();
-                                if (data.status === 'ok' && data.plan) {
-                                  setAIDirectorPlan(data.plan);
-                                } else {
-                                  console.error('[AI DIRECTOR] Failed:', data);
-                                  alert(data.detail || 'Failed to analyze video');
-                                  setIsAIDirectorOpen(false);
-                                }
-                              } catch (err) {
-                                console.error('[AI DIRECTOR] Error:', err);
-                                alert('Error analyzing video. Check console.');
-                                setIsAIDirectorOpen(false);
-                              } finally {
-                                setAIDirectorLoading(false);
-                              }
+                              // User will select context videos and click "Run Analysis" in the modal
                             }}
                             title="AI Director: Analyze previous shot and plan this one"
                           >
@@ -5146,11 +5182,33 @@ export default function App() {
                       const img = media.find(m => m.id === imgId);
                       if (!img) return null;
                       return (
-                        <div key={imgId} className="relative w-28 h-20 rounded border border-green-500/50 overflow-hidden group">
+                        <div
+                          key={imgId}
+                          className="relative w-28 h-20 rounded border border-green-500/50 overflow-hidden group cursor-pointer"
+                          onClick={() => window.open(`http://127.0.0.1:8000${img.url}`, '_blank')}
+                          title="Click to view full size"
+                        >
                           <img src={`http://127.0.0.1:8000${img.url}`} className="w-full h-full object-cover" />
+                          {/* Finder button */}
+                          <button
+                            className="absolute top-1 left-1 bg-black/70 text-[10px] text-white px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              fetch('http://127.0.0.1:8000/system/reveal-file', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ path: img.path })
+                              });
+                            }}
+                            title="Reveal in Finder"
+                          >📁</button>
+                          {/* Remove button */}
                           <button
                             className="absolute top-1 right-1 bg-red-500/80 text-white text-[10px] w-5 h-5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => setSceneMasterImageIds(sceneMasterImageIds.filter(id => id !== imgId))}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSceneMasterImageIds(sceneMasterImageIds.filter(id => id !== imgId));
+                            }}
                           >
                             ×
                           </button>
@@ -5215,8 +5273,23 @@ export default function App() {
                               <div className="flex-shrink-0">
                                 <div className="text-[8px] text-neutral-500 mb-1">Global Ref</div>
                                 {globalImg ? (
-                                  <div className="w-12 h-12 rounded overflow-hidden border border-neutral-600">
+                                  <div className="w-12 h-12 rounded overflow-hidden border border-neutral-600 relative group cursor-pointer"
+                                    onClick={() => window.open(`http://127.0.0.1:8000${globalImg.url}`, '_blank')}
+                                    title="Click to view full size"
+                                  >
                                     <img src={`http://127.0.0.1:8000${globalImg.url}`} className="w-full h-full object-cover" />
+                                    <button
+                                      className="absolute top-0 right-0 bg-black/70 text-[8px] text-white px-1 rounded-bl opacity-0 group-hover:opacity-100"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetch('http://127.0.0.1:8000/system/reveal-file', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ path: globalImg.path })
+                                        });
+                                      }}
+                                      title="Reveal in Finder"
+                                    >📁</button>
                                   </div>
                                 ) : (
                                   <div className="w-12 h-12 rounded border border-neutral-700 bg-neutral-800 flex items-center justify-center text-neutral-600 text-lg">?</div>
@@ -5230,11 +5303,29 @@ export default function App() {
                               <div className="flex-shrink-0">
                                 <div className="text-[8px] text-neutral-500 mb-1">Scene Ref</div>
                                 {sceneImg ? (
-                                  <div className="w-12 h-12 rounded overflow-hidden border border-green-500/50 relative group">
+                                  <div className="w-12 h-12 rounded overflow-hidden border border-green-500/50 relative group cursor-pointer"
+                                    onClick={() => window.open(`http://127.0.0.1:8000${sceneImg.url}`, '_blank')}
+                                    title="Click to view full size"
+                                  >
                                     <img src={`http://127.0.0.1:8000${sceneImg.url}`} className="w-full h-full object-cover" />
+                                    {/* Finder button */}
                                     <button
-                                      className="absolute inset-0 bg-red-500/80 text-white text-[10px] opacity-0 group-hover:opacity-100 flex items-center justify-center"
-                                      onClick={() => {
+                                      className="absolute top-0 right-0 bg-black/70 text-[8px] text-white px-1 rounded-bl opacity-0 group-hover:opacity-100"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetch('http://127.0.0.1:8000/system/reveal-file', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ path: sceneImg.path })
+                                        });
+                                      }}
+                                      title="Reveal in Finder"
+                                    >📁</button>
+                                    {/* Remove button */}
+                                    <button
+                                      className="absolute bottom-0 left-0 right-0 bg-red-500/80 text-white text-[8px] opacity-0 group-hover:opacity-100 text-center py-0.5"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         const newCast = [...sceneCast];
                                         newCast[castIdx] = { ...newCast[castIdx], scene_reference_ids: [] };
                                         setSceneCast(newCast);
@@ -5616,7 +5707,28 @@ export default function App() {
         if (!open) {
           setIsAIDirectorOpen(false);
           setAIDirectorPlan(null);
+          setAIDirectorVideoPath(null);
           setAIDirectorShotIdx(null);
+          setExtractingFrames(new Set());
+          setAIDirectorExtractedFrames([]);
+          setAIDirectorUseExtractedRefs(true);
+          setAIDirectorStep('setup');
+          setAIDirectorPreviewImage(null);
+          setAIDirectorVideoMode('start_frame');
+          setScrubberTime(0);
+          setScrubberDuration(0);
+          setScrubberAssignTo('scene');
+          setScrubberSelectedShotIdx(null);
+          setAIDirectorImageModel('google/nano-banana');
+          setAIDirectorVideoModel('google/veo-3.1');
+          setAIDirectorVideoDuration(8);
+          setAIDirectorGenerateAudio(true);
+          setAIDirectorImagePrompt('');
+          setAIDirectorVideoPrompt('');
+          setAIDirectorActiveRefIds([]);
+          setAIDirectorVideoRefIds([]);
+          setAIDirectorFlowMode('image_first');
+          setAIDirectorContextVideos([]);
         }
       }}>
         <Dialog.Portal>
@@ -5631,190 +5743,1172 @@ export default function App() {
               )}
             </Dialog.Title>
 
-            {aiDirectorLoading ? (
-              <div className="text-center py-12">
-                <div className="text-cyan-400 text-lg mb-2">⏳ Analyzing previous shot...</div>
-                <div className="text-neutral-500 text-sm">Gemini is watching the video and planning the next shot</div>
-              </div>
-            ) : aiDirectorPlan ? (
+            {/* SETUP PHASE - Select context videos BEFORE calling Gemini */}
+            {aiDirectorStep === 'setup' ? (
               <div className="space-y-4">
-                {/* Video End State */}
-                <div className="bg-neutral-800/50 p-3 rounded border border-neutral-700">
-                  <div className="text-[10px] text-cyan-400 font-bold mb-1">📹 PREVIOUS VIDEO END STATE</div>
-                  <div className="text-xs text-neutral-300">{aiDirectorPlan.video_end_state}</div>
-                </div>
-
-                {/* Continuity Notes */}
-                {aiDirectorPlan.continuity_notes && (
-                  <div className="bg-amber-500/10 p-3 rounded border border-amber-500/30">
-                    <div className="text-[10px] text-amber-400 font-bold mb-1">⚠️ CONTINUITY REQUIREMENTS</div>
-                    <div className="text-xs text-amber-200">{aiDirectorPlan.continuity_notes}</div>
+                <div className="bg-cyan-500/10 p-4 rounded border border-cyan-500/30">
+                  <div className="text-lg text-cyan-300 font-bold mb-2">📽️ Step 1: Select Videos for Gemini to Analyze</div>
+                  <div className="text-sm text-neutral-300 mb-4">
+                    Gemini will watch these videos to understand continuity and plan the next shot.
+                    The more context you give it, the better it can maintain character positions and scene flow.
                   </div>
-                )}
 
-                {/* Characters */}
-                {aiDirectorPlan.characters_in_shot.length > 0 && (
-                  <div className="bg-blue-500/10 p-3 rounded border border-blue-500/30">
-                    <div className="text-[10px] text-blue-400 font-bold mb-1">👥 CHARACTERS IN SHOT</div>
-                    <div className="flex gap-2 flex-wrap">
-                      {aiDirectorPlan.characters_in_shot.map((name, i) => (
-                        <span key={i} className="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded">{name}</span>
-                      ))}
+                  {/* Previous shot (required) */}
+                  <div className="mb-4">
+                    <div className="text-[10px] text-neutral-500 mb-1">REQUIRED: Immediately previous shot (Shot {aiDirectorShotIdx})</div>
+                    <div className="bg-neutral-800 p-2 rounded border border-green-500/50 flex items-center gap-2">
+                      <span className="text-green-400">✓</span>
+                      <span className="text-sm text-neutral-200">
+                        Shot {aiDirectorShotIdx}: {sceneDetail?.shots?.[aiDirectorShotIdx! - 1]?.subject || sceneDetail?.shots?.[aiDirectorShotIdx! - 1]?.action?.slice(0, 30) || 'Previous shot'}
+                      </span>
                     </div>
                   </div>
-                )}
 
-                {/* Execution Plan */}
-                <div className="bg-green-500/10 p-3 rounded border border-green-500/30">
-                  <div className="text-[10px] text-green-400 font-bold mb-2">🎯 EXECUTION PLAN</div>
-
-                  <div className="space-y-3">
-                    <div>
-                      <div className="text-[10px] text-neutral-400 mb-1">Step 1: Generate Start Frame Image</div>
-                      <div className="text-xs text-neutral-300 bg-neutral-800 p-2 rounded">{aiDirectorPlan.image_prompt}</div>
-                      {aiDirectorPlan.use_prev_last_frame && (
-                        <div className="text-[10px] text-violet-400 mt-1">✓ Will extract last frame from previous video as continuity reference</div>
+                  {/* Additional context videos */}
+                  {aiDirectorShotIdx !== null && aiDirectorShotIdx > 1 && (
+                    <div className="mb-4">
+                      <div className="text-[10px] text-neutral-500 mb-2">OPTIONAL: Add earlier shots for more context</div>
+                      <div className="flex flex-wrap gap-2">
+                        {(sceneDetail?.shots || []).slice(0, aiDirectorShotIdx - 1).map((shot, idx) => {
+                          if (!shot.file_path) return null;
+                          const isSelected = aiDirectorContextVideos.includes(idx);
+                          return (
+                            <button
+                              key={idx}
+                              className={`text-sm px-3 py-2 rounded transition-all ${
+                                isSelected
+                                  ? 'bg-violet-500/40 text-violet-100 border-2 border-violet-400 ring-2 ring-violet-400/30'
+                                  : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700 border border-neutral-600'
+                              }`}
+                              onClick={() => {
+                                if (isSelected) {
+                                  setAIDirectorContextVideos(prev => prev.filter(i => i !== idx));
+                                } else {
+                                  setAIDirectorContextVideos(prev => [...prev, idx].sort((a, b) => a - b));
+                                }
+                              }}
+                            >
+                              {isSelected && '✓ '}Shot {idx + 1}: {shot.subject || shot.action?.slice(0, 20) || '...'}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {aiDirectorContextVideos.length > 0 && (
+                        <div className="mt-2 text-[10px] text-violet-300">
+                          Selected {aiDirectorContextVideos.length} additional video(s) for context
+                        </div>
                       )}
                     </div>
+                  )}
 
-                    <div>
-                      <div className="text-[10px] text-neutral-400 mb-1">Step 2: Generate Video</div>
-                      <div className="text-xs text-neutral-300 bg-neutral-800 p-2 rounded">{aiDirectorPlan.video_prompt}</div>
-                    </div>
+                  {/* Summary */}
+                  <div className="bg-neutral-900/50 p-2 rounded text-sm">
+                    <span className="text-neutral-400">Gemini will analyze:</span>
+                    <span className="text-cyan-300 font-bold ml-2">
+                      {aiDirectorContextVideos.length + 1} video{aiDirectorContextVideos.length > 0 ? 's' : ''}
+                    </span>
+                    <span className="text-neutral-500 ml-1">
+                      (Shot{aiDirectorContextVideos.length > 0 ? 's' : ''} {[...aiDirectorContextVideos.map(i => i + 1), aiDirectorShotIdx].sort((a, b) => a - b).join(', ')})
+                    </span>
                   </div>
                 </div>
 
-                {/* Reasoning */}
-                {aiDirectorPlan.reasoning && (
-                  <div className="bg-neutral-800/30 p-3 rounded border border-neutral-700">
-                    <div className="text-[10px] text-neutral-500 font-bold mb-1">💭 REASONING</div>
-                    <div className="text-xs text-neutral-400">{aiDirectorPlan.reasoning}</div>
+                {/* Reference Images Selection - BEFORE Gemini call */}
+                <div className="bg-amber-500/10 p-4 rounded border border-amber-500/30">
+                  <div className="text-lg text-amber-300 font-bold mb-2">🖼️ Step 2: Select Reference Images</div>
+                  <div className="text-sm text-neutral-300 mb-4">
+                    Choose which images to use as references for generation. These will NOT be auto-selected - you have full control.
                   </div>
-                )}
+
+                  {/* Current selections */}
+                  {aiDirectorActiveRefIds.length > 0 && (
+                    <div className="mb-3 p-2 bg-green-500/10 rounded border border-green-500/30">
+                      <div className="text-[10px] text-green-300 font-bold mb-1">✓ SELECTED ({aiDirectorActiveRefIds.length}):</div>
+                      <div className="flex flex-wrap gap-1">
+                        {aiDirectorActiveRefIds.map(id => {
+                          const m = media.find(med => med.id === id);
+                          return (
+                            <span key={id} className="text-[10px] bg-green-500/30 text-green-200 px-2 py-0.5 rounded flex items-center gap-1">
+                              {m?.path?.split('/').pop() || id}
+                              <button className="text-red-300 hover:text-red-200 font-bold" onClick={() => setAIDirectorActiveRefIds(prev => prev.filter(i => i !== id))}>×</button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-6 gap-2 max-h-[150px] overflow-y-auto p-1 bg-neutral-900/50 rounded">
+                    {/* Scene Master Images */}
+                    {(sceneMasterImageIds || []).map((id) => {
+                      const m = media.find(med => med.id === id);
+                      if (!m) return null;
+                      const isActive = aiDirectorActiveRefIds.includes(id);
+                      return (
+                        <button key={id}
+                          className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                            isActive ? 'border-green-400 ring-2 ring-green-400/50 scale-105' : 'border-neutral-700 opacity-60 hover:opacity-90 grayscale hover:grayscale-0'
+                          }`}
+                          onClick={() => {
+                            if (isActive) setAIDirectorActiveRefIds(prev => prev.filter(i => i !== id));
+                            else setAIDirectorActiveRefIds(prev => [...prev, id]);
+                          }}
+                          onContextMenu={(e) => { e.preventDefault(); fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: m.path }) }); }}
+                        >
+                          <img src={`http://127.0.0.1:8000${m.url}`} className="w-full h-full object-cover" alt="" />
+                          {isActive && <div className="absolute top-0 right-0 bg-green-500 text-white text-[8px] px-1 rounded-bl font-bold">✓</div>}
+                          <div className={`absolute bottom-0 left-0 right-0 text-[7px] px-0.5 truncate ${isActive ? 'bg-green-500/90 text-white' : 'bg-black/80 text-green-400'}`}>Scene Master</div>
+                        </button>
+                      );
+                    })}
+                    {/* Character Refs */}
+                    {characters.map(char => {
+                      const castEntry = sceneCast?.find(c => c.character_id === char.character_id);
+                      const refIds = castEntry?.scene_reference_ids?.length ? castEntry.scene_reference_ids : (char.reference_image_ids || []);
+                      return refIds.map((id: string) => {
+                        const m = media.find(med => med.id === id);
+                        if (!m) return null;
+                        const isActive = aiDirectorActiveRefIds.includes(id);
+                        return (
+                          <button key={id}
+                            className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                              isActive ? 'border-blue-400 ring-2 ring-blue-400/50 scale-105' : 'border-neutral-700 opacity-60 hover:opacity-90 grayscale hover:grayscale-0'
+                            }`}
+                            onClick={() => {
+                              if (isActive) setAIDirectorActiveRefIds(prev => prev.filter(i => i !== id));
+                              else setAIDirectorActiveRefIds(prev => [...prev, id]);
+                            }}
+                            onContextMenu={(e) => { e.preventDefault(); fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: m.path }) }); }}
+                          >
+                            <img src={`http://127.0.0.1:8000${m.url}`} className="w-full h-full object-cover" alt="" />
+                            {isActive && <div className="absolute top-0 right-0 bg-blue-500 text-white text-[8px] px-1 rounded-bl font-bold">✓</div>}
+                            <div className={`absolute bottom-0 left-0 right-0 text-[7px] px-0.5 truncate ${isActive ? 'bg-blue-500/90 text-white' : 'bg-black/80 text-blue-400'}`}>{char.name}</div>
+                          </button>
+                        );
+                      });
+                    })}
+                  </div>
+                  {aiDirectorActiveRefIds.length === 0 && (
+                    <div className="text-[10px] text-neutral-500 mt-2 italic">No images selected - click to select reference images</div>
+                  )}
+                </div>
 
                 {/* Action Buttons */}
-                <div className="flex justify-end gap-2 pt-2 border-t border-neutral-700">
+                <div className="flex justify-between pt-2">
                   <Dialog.Close asChild>
                     <button className="button text-sm">Cancel</button>
                   </Dialog.Close>
                   <button
-                    className="button text-sm bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
-                    disabled={aiDirectorExecuting}
+                    className="button text-sm bg-cyan-500/30 text-cyan-200 hover:bg-cyan-500/40 font-bold px-6"
+                    disabled={aiDirectorLoading}
                     onClick={async () => {
-                      if (aiDirectorShotIdx === null || !aiDirectorPlan) return;
-                      const shot = sceneDetail?.shots?.[aiDirectorShotIdx];
-                      if (!shot) return;
-
-                      setAIDirectorExecuting(true);
-                      const jobId = startJob(`AI Director: ${shot.shot_id}`);
-
+                      setAIDirectorLoading(true);
                       try {
-                        // Step 1: Get start frame (from prev shot's last frame if recommended, or generate)
-                        let startFramePath: string | undefined;
-
-                        if (aiDirectorPlan.use_prev_last_frame && aiDirectorShotIdx > 0) {
-                          const prevShot = sceneDetail?.shots?.[aiDirectorShotIdx - 1];
-                          if (prevShot?.last_frame_path) {
-                            startFramePath = prevShot.last_frame_path;
-                            console.log('[AI DIRECTOR] Using prev shot last frame:', startFramePath);
-                          }
-                        }
-
-                        // Step 2: Generate start frame image if needed
-                        if (!startFramePath) {
-                          console.log('[AI DIRECTOR] Generating start frame image...');
-
-                          // Get character refs for image generation
-                          const charRefs: string[] = [];
-                          for (const charName of aiDirectorPlan.characters_in_shot) {
-                            const char = characters.find(c => c.name.toLowerCase().includes(charName.toLowerCase()));
-                            if (char?.reference_image_ids) {
-                              const castEntry = sceneCast?.find(c => c.character_id === char.character_id);
-                              const refs = castEntry?.scene_reference_ids?.length ? castEntry.scene_reference_ids : char.reference_image_ids;
-                              charRefs.push(...refs);
-                            }
-                          }
-                          const refPaths = charRefs.map(id => media.find(m => m.id === id)?.path).filter(Boolean) as string[];
-
-                          const imgRes = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              project_id: projectId,
-                              scene_id: selectedSceneId,
-                              prompt: aiDirectorPlan.image_prompt,
-                              provider: 'replicate',
-                              media_type: 'image',
-                              model: 'google/nano-banana',
-                              aspect_ratio: '16:9',
-                              reference_images: refPaths
-                            })
-                          });
-                          const imgData = await imgRes.json();
-
-                          if (imgRes.ok && imgData.status === 'ok' && imgData.images?.[0]) {
-                            startFramePath = imgData.images[0];
-                            console.log('[AI DIRECTOR] Generated start frame:', startFramePath);
-                            await refreshMedia();
-
-                            // Link to shot
-                            await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${shot.shot_id}`, {
-                              method: 'PUT',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ start_frame_path: startFramePath })
-                            });
-                          } else {
-                            throw new Error(imgData.detail || 'Failed to generate start frame');
-                          }
-                        }
-
-                        // Step 3: Generate video using the start frame
-                        console.log('[AI DIRECTOR] Generating video with start frame:', startFramePath);
-                        const vidRes = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                        console.log('[AI DIRECTOR] Sending selected_ref_ids to backend:', aiDirectorActiveRefIds);
+                        const res = await fetch('http://127.0.0.1:8000/ai/plan-shot-from-video', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({
                             project_id: projectId,
                             scene_id: selectedSceneId,
-                            prompt: aiDirectorPlan.video_prompt,
-                            shot_id: shot.shot_id,
-                            provider: 'replicate',
-                            media_type: 'video',
-                            model: 'google/veo-3.1',
-                            duration: 8,
-                            resolution: '1080p',
-                            aspect_ratio: '16:9',
-                            start_frame_path: startFramePath,
-                            generate_audio: true
+                            shot_id: sceneDetail?.shots?.[aiDirectorShotIdx!]?.shot_id,
+                            prev_video_path: sceneDetail?.shots?.[aiDirectorShotIdx! - 1]?.file_path,
+                            additional_video_paths: aiDirectorContextVideos.map(idx => sceneDetail?.shots?.[idx]?.file_path).filter(Boolean),
+                            selected_ref_ids: aiDirectorActiveRefIds.length > 0 ? aiDirectorActiveRefIds : null
                           })
                         });
-                        const vidData = await vidRes.json();
-
-                        if (vidRes.ok && vidData.status === 'ok') {
-                          console.log('[AI DIRECTOR] Video generated:', vidData);
-                          await refreshMedia();
-                          // Refresh scene to show updated shot
-                          const sceneRes = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`);
-                          const sceneData = await sceneRes.json();
-                          setSceneDetail(sceneData.scene ?? null);
-                          finishJob(jobId, 'success');
-                          setIsAIDirectorOpen(false);
+                        const data = await res.json();
+                        if (data.status === 'ok' && data.plan) {
+                          setAIDirectorPlan(data.plan);
+                          setAIDirectorVideoPath(data.prev_video_path || sceneDetail?.shots?.[aiDirectorShotIdx! - 1]?.file_path);
+                          setAIDirectorImagePrompt(data.plan.image_prompt || '');
+                          setAIDirectorVideoPrompt(data.plan.video_prompt || '');
+                          setAIDirectorStep('plan');
+                          // DO NOT auto-select refs - user already selected them in setup
                         } else {
-                          throw new Error(vidData.detail || 'Failed to generate video');
+                          alert(data.detail || 'Failed to analyze');
                         }
-
                       } catch (err) {
-                        console.error('[AI DIRECTOR] Execution error:', err);
-                        finishJob(jobId, 'error');
-                        alert(`AI Director error: ${err}`);
+                        alert('Error: ' + err);
                       } finally {
-                        setAIDirectorExecuting(false);
+                        setAIDirectorLoading(false);
                       }
                     }}
                   >
-                    {aiDirectorExecuting ? '⏳ Executing...' : '🚀 Execute Plan (Image → Video)'}
+                    {aiDirectorLoading ? '⏳ Analyzing...' : `🎬 Run Gemini Analysis (${aiDirectorContextVideos.length + 1} video${aiDirectorContextVideos.length > 0 ? 's' : ''})`}
                   </button>
                 </div>
+              </div>
+            ) : aiDirectorLoading ? (
+              <div className="text-center py-12">
+                <div className="text-cyan-400 text-lg mb-2">Analyzing previous shot...</div>
+                <div className="text-neutral-500 text-sm">Gemini is watching {aiDirectorContextVideos.length + 1} video(s) and planning the next shot</div>
+              </div>
+            ) : aiDirectorPlan ? (
+              <div className="space-y-3">
+                {/* Shot Context: Original Plan + Gemini's Analysis */}
+                <details className="bg-blue-500/10 rounded border border-blue-500/30">
+                  <summary className="p-2 cursor-pointer text-[10px] text-blue-400 font-bold">
+                    📋 SHOT CONTEXT (Original Plan vs AI Director Analysis)
+                  </summary>
+                  <div className="p-3 pt-0 space-y-2">
+                    {/* Original Shot Plan */}
+                    {aiDirectorShotIdx !== null && sceneDetail?.shots?.[aiDirectorShotIdx] && (
+                      <div>
+                        <div className="text-[9px] text-neutral-500 mb-1">ORIGINAL SHOT PLAN:</div>
+                        <div className="text-[10px] text-neutral-300 bg-neutral-900/50 p-2 rounded">
+                          <div><span className="text-neutral-500">Subject:</span> {sceneDetail.shots[aiDirectorShotIdx].subject || '-'}</div>
+                          <div><span className="text-neutral-500">Action:</span> {sceneDetail.shots[aiDirectorShotIdx].action || '-'}</div>
+                          <div><span className="text-neutral-500">Camera:</span> {sceneDetail.shots[aiDirectorShotIdx].camera_angle || '-'}</div>
+                          <div><span className="text-neutral-500">Dialogue:</span> {sceneDetail.shots[aiDirectorShotIdx].dialogue || 'None'}</div>
+                          {sceneDetail.shots[aiDirectorShotIdx].prompt_suggestion && (
+                            <div className="mt-1 text-[9px] text-cyan-400">Suggested: {sceneDetail.shots[aiDirectorShotIdx].prompt_suggestion}</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {/* Gemini's Analysis */}
+                    <div>
+                      <div className="text-[9px] text-neutral-500 mb-1">GEMINI'S ANALYSIS:</div>
+                      <div className="text-[10px] text-neutral-300 bg-neutral-900/50 p-2 rounded space-y-1">
+                        <div><span className="text-neutral-500">Previous shot ends:</span> {aiDirectorPlan.video_end_state || '-'}</div>
+                        <div><span className="text-neutral-500">Characters in this shot:</span> {aiDirectorPlan.characters_in_shot?.join(', ') || 'None specified'}</div>
+                        <div><span className="text-neutral-500">Continuity notes:</span> {aiDirectorPlan.continuity_notes || '-'}</div>
+                        {aiDirectorPlan.reasoning && (
+                          <div className="mt-1 text-[9px] text-green-400"><span className="text-neutral-500">Reasoning:</span> {aiDirectorPlan.reasoning}</div>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                </details>
+
+                {/* Back to Setup button - allows changing context videos */}
+                <button
+                  className="text-[10px] px-2 py-1 rounded bg-neutral-800 text-neutral-400 hover:bg-neutral-700 border border-neutral-700"
+                  onClick={() => setAIDirectorStep('setup')}
+                >
+                  ← Back to Setup (change videos/refs)
+                </button>
+
+                {/* Flow Mode Choice */}
+                {aiDirectorStep === 'plan' && (
+                  <div className="flex gap-2 mb-2">
+                    <button
+                      className={`flex-1 p-2 rounded border text-xs ${aiDirectorFlowMode === 'image_first' ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300' : 'bg-neutral-800 border-neutral-700 text-neutral-400'}`}
+                      onClick={() => setAIDirectorFlowMode('image_first')}
+                    >
+                      Generate Start Frame → Video
+                    </button>
+                    <button
+                      className={`flex-1 p-2 rounded border text-xs ${aiDirectorFlowMode === 'skip_to_video' ? 'bg-green-500/20 border-green-500/50 text-green-300' : 'bg-neutral-800 border-neutral-700 text-neutral-400'}`}
+                      onClick={() => setAIDirectorFlowMode('skip_to_video')}
+                    >
+                      Skip to Video (refs only)
+                    </button>
+                  </div>
+                )}
+
+                {/* Step Indicator */}
+                <div className="flex gap-2">
+                  <div className={`flex-1 text-center text-xs py-1 rounded cursor-pointer ${
+                    aiDirectorStep === 'plan' ? 'bg-cyan-500/30 text-cyan-300' : 'bg-neutral-800 text-neutral-500 hover:bg-neutral-700'
+                  }`} onClick={() => aiDirectorStep !== 'plan' && setAIDirectorStep('plan')}>
+                    1. {aiDirectorFlowMode === 'image_first' ? 'Image Setup' : 'Video Setup'}
+                  </div>
+                  <div className={`flex-1 text-center text-xs py-1 rounded ${
+                    aiDirectorStep === 'preview' ? 'bg-cyan-500/30 text-cyan-300' : 'bg-neutral-800 text-neutral-500'
+                  }`}>
+                    2. {aiDirectorFlowMode === 'image_first' ? 'Preview & Video' : 'Generate'}
+                  </div>
+                </div>
+
+                {/* STEP 1: SETUP */}
+                {aiDirectorStep === 'plan' && (
+                  <>
+                    {/* Scene Style Guide (always visible) */}
+                    <div className="bg-amber-500/10 p-2 rounded border border-amber-500/30">
+                      <div className="text-[9px] text-amber-400 font-bold mb-1">SCENE STYLE (auto-appended to all prompts)</div>
+                      <div className="text-[10px] text-neutral-300 font-mono">
+                        {[sceneVisualStyle, sceneColorPalette ? `Colors: ${sceneColorPalette}` : '', sceneCameraStyle ? `Camera: ${sceneCameraStyle}` : ''].filter(Boolean).join(' | ') || 'No style defined - using defaults'}
+                        {' + photorealistic, live action, 35mm film'}
+                      </div>
+                    </div>
+
+                    {/* Prompt Editor */}
+                    <div className="bg-neutral-800/50 p-3 rounded border border-neutral-700">
+                      <div className="text-[10px] text-cyan-400 font-bold mb-2">
+                        {aiDirectorFlowMode === 'image_first' ? 'IMAGE PROMPT (from Gemini - edit as needed)' : 'VIDEO PROMPT (from Gemini - edit as needed)'}
+                      </div>
+                      <textarea
+                        value={aiDirectorFlowMode === 'image_first' ? aiDirectorImagePrompt : aiDirectorVideoPrompt}
+                        onChange={(e) => aiDirectorFlowMode === 'image_first' ? setAIDirectorImagePrompt(e.target.value) : setAIDirectorVideoPrompt(e.target.value)}
+                        className="w-full bg-neutral-900 text-xs text-neutral-200 rounded px-2 py-1.5 border border-neutral-600 resize-none"
+                        rows={4}
+                        placeholder="Describe the shot with FULL character descriptions..."
+                      />
+                      <div className="text-[9px] text-neutral-500 mt-1">
+                        Include full visual descriptions for every character (age, hair, clothing) with "(as shown in reference images)"
+                      </div>
+                    </div>
+
+                    {/* Reference Images Selection */}
+                    {(() => {
+                      const currentModel = aiDirectorFlowMode === 'image_first' ? aiDirectorImageModel : aiDirectorVideoModel;
+                      const refLimits: Record<string, number> = {
+                        'google/nano-banana': 4,
+                        'google/imagen-3.0-generate-002': 0,
+                        'black-forest-labs/flux-1.1-pro': 0,
+                        'black-forest-labs/flux-kontext-pro': 4,
+                        'google/veo-3.1': 3, // Up to 3 refs if no start frame (Vertex API)
+                        'google/veo-2': 3,   // Up to 3 refs if no start frame
+                        'kwaivgi/kling-v1.6-pro': 1,
+                        'minimax/video-01': 1,
+                      };
+                      const maxRefs = refLimits[currentModel] ?? 4;
+                      // Only count refs that are actually selected (in aiDirectorActiveRefIds)
+                      const currentSelectedCount = aiDirectorActiveRefIds.length;
+
+                      return (
+                        <div className="bg-neutral-800/50 p-3 rounded border border-neutral-700">
+                          <div className="flex justify-between items-center mb-2">
+                            <div className="text-[10px] text-cyan-400 font-bold">
+                              REFERENCE IMAGES ({currentSelectedCount}/{maxRefs} max for {currentModel.split('/')[1]})
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {currentSelectedCount > maxRefs && (
+                                <div className="text-[9px] text-red-400 font-bold">⚠️ TOO MANY!</div>
+                              )}
+                              {currentSelectedCount > 0 && (
+                                <button
+                                  className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                                  onClick={() => setAIDirectorActiveRefIds([])}
+                                >
+                                  Clear All
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {/* Selected refs summary */}
+                          {currentSelectedCount > 0 && (
+                            <div className="mb-2 p-1.5 bg-cyan-500/10 rounded border border-cyan-500/30">
+                              <div className="text-[9px] text-cyan-300 font-bold mb-1">✓ SELECTED ({currentSelectedCount}):</div>
+                              <div className="flex flex-wrap gap-1">
+                                {aiDirectorActiveRefIds.map(id => {
+                                  const m = media.find(med => med.id === id);
+                                  const extFrame = aiDirectorExtractedFrames.find(f => f.id === id);
+                                  const label = extFrame
+                                    ? `${extFrame.type === 'character' ? extFrame.characterName : 'Scene'} (extracted)`
+                                    : m?.path?.split('/').pop() || id;
+                                  return (
+                                    <span
+                                      key={id}
+                                      className="text-[8px] bg-cyan-500/30 text-cyan-200 px-1.5 py-0.5 rounded flex items-center gap-1"
+                                    >
+                                      {label}
+                                      <button
+                                        className="text-red-300 hover:text-red-200 font-bold"
+                                        onClick={() => setAIDirectorActiveRefIds(prev => prev.filter(i => i !== id))}
+                                      >
+                                        ×
+                                      </button>
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                          {maxRefs === 0 ? (
+                            <div className="text-[10px] text-neutral-500 italic">This model does not support reference images</div>
+                          ) : (
+                            <>
+                              <div className="text-[9px] text-neutral-500 mb-2">Click to toggle. Only selected images will be sent.</div>
+                              <div className="grid grid-cols-8 gap-1 p-1 bg-neutral-900/50 rounded border border-neutral-700 max-h-[100px] overflow-y-auto">
+                                {/* Scene Master Images */}
+                                {(sceneMasterImageIds || []).map((id) => {
+                                  const m = media.find(med => med.id === id);
+                                  if (!m) return null;
+                                  const isActive = aiDirectorActiveRefIds.includes(id);
+                                  return (
+                                    <button
+                                      key={id}
+                                      className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                        isActive ? 'border-green-400 ring-2 ring-green-400/50 scale-105 z-10' : 'border-neutral-700 opacity-50 hover:opacity-80 grayscale hover:grayscale-0'
+                                      }`}
+                                      onClick={() => {
+                                        if (isActive) {
+                                          setAIDirectorActiveRefIds(prev => prev.filter(i => i !== id));
+                                        } else if (currentSelectedCount < maxRefs) {
+                                          setAIDirectorActiveRefIds(prev => [...prev, id]);
+                                        }
+                                      }}
+                                      onContextMenu={(e) => { e.preventDefault(); fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: m.path }) }); }}
+                                      title={`Scene: ${id} (right-click: Finder)`}
+                                    >
+                                      <img src={`http://127.0.0.1:8000${m.url}`} className="w-full h-full object-cover" alt="" />
+                                      {isActive && <div className="absolute top-0 right-0 bg-green-500 text-white text-[8px] px-1 rounded-bl font-bold">✓</div>}
+                                      <div className={`absolute bottom-0 left-0 right-0 text-[6px] px-0.5 truncate ${isActive ? 'bg-green-500/90 text-white' : 'bg-black/80 text-green-400'}`}>Scene</div>
+                                    </button>
+                                  );
+                                })}
+
+                                {/* Character Refs */}
+                                {characters.map(char => {
+                                  const castEntry = sceneCast?.find(c => c.character_id === char.character_id);
+                                  const refIds = castEntry?.scene_reference_ids?.length ? castEntry.scene_reference_ids : (char.reference_image_ids || []);
+                                  return refIds.map((id: string) => {
+                                    const m = media.find(med => med.id === id);
+                                    if (!m) return null;
+                                    const isActive = aiDirectorActiveRefIds.includes(id);
+                                    return (
+                                      <button
+                                        key={id}
+                                        className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                          isActive ? 'border-blue-400 ring-2 ring-blue-400/50 scale-105 z-10' : 'border-neutral-700 opacity-50 hover:opacity-80 grayscale hover:grayscale-0'
+                                        }`}
+                                        onClick={() => {
+                                          if (isActive) {
+                                            setAIDirectorActiveRefIds(prev => prev.filter(i => i !== id));
+                                          } else if (currentSelectedCount < maxRefs) {
+                                            setAIDirectorActiveRefIds(prev => [...prev, id]);
+                                          }
+                                        }}
+                                        onContextMenu={(e) => { e.preventDefault(); fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: m.path }) }); }}
+                                        title={`${char.name}: ${id} (right-click: Finder)`}
+                                      >
+                                        <img src={`http://127.0.0.1:8000${m.url}`} className="w-full h-full object-cover" alt="" />
+                                        {isActive && <div className="absolute top-0 right-0 bg-blue-500 text-white text-[8px] px-1 rounded-bl font-bold">✓</div>}
+                                        <div className={`absolute bottom-0 left-0 right-0 text-[6px] px-0.5 truncate ${isActive ? 'bg-blue-500/90 text-white' : 'bg-black/80 text-blue-400'}`}>{char.name}</div>
+                                      </button>
+                                    );
+                                  });
+                                })}
+
+                                {/* Extracted Frames - toggleable */}
+                                {aiDirectorExtractedFrames.map((frame, i) => {
+                                  const isActive = aiDirectorActiveRefIds.includes(frame.id);
+                                  return (
+                                    <button
+                                      key={`ext-${i}`}
+                                      className={`relative aspect-video rounded overflow-hidden border-2 transition-all ${
+                                        isActive ? 'border-violet-400 ring-2 ring-violet-400/50 scale-105 z-10' : 'border-neutral-700 opacity-50 hover:opacity-80 grayscale hover:grayscale-0'
+                                      }`}
+                                      onClick={() => {
+                                        if (isActive) {
+                                          setAIDirectorActiveRefIds(prev => prev.filter(id => id !== frame.id));
+                                        } else if (currentSelectedCount < maxRefs) {
+                                          setAIDirectorActiveRefIds(prev => [...prev, frame.id]);
+                                        }
+                                      }}
+                                      onContextMenu={(e) => { e.preventDefault(); fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: frame.path }) }); }}
+                                      title={`Extracted: ${frame.description} (right-click: Finder)`}
+                                    >
+                                      <img src={`http://127.0.0.1:8000${frame.url}`} className="w-full h-full object-cover" alt=""
+                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                      {isActive && <div className="absolute top-0 right-0 bg-violet-500 text-white text-[8px] px-1 rounded-bl font-bold">✓</div>}
+                                      <div className={`absolute bottom-0 left-0 right-0 text-[6px] px-0.5 truncate ${isActive ? 'bg-violet-500/90 text-white' : 'bg-black/80 text-violet-400'}`}>
+                                        {frame.type === 'character' ? frame.characterName : 'Scene'} (ext)
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Frame Extractor (Collapsible) */}
+                    <details className="bg-violet-500/10 rounded border border-violet-500/30">
+                      <summary className="p-2 cursor-pointer text-[10px] text-violet-400 font-bold">
+                        + Extract New Frame from Prior Shot
+                      </summary>
+                      <div className="p-3 pt-0 space-y-2">
+                        {(() => {
+                          const priorShotsWithVideos = (sceneDetail?.shots || [])
+                            .map((shot, idx) => ({ shot, idx }))
+                            .filter(({ idx }) => idx < (aiDirectorShotIdx ?? 0) && sceneDetail?.shots?.[idx]?.file_path)
+                            .reverse();
+                          const selectedShotInfo = scrubberSelectedShotIdx !== null
+                            ? priorShotsWithVideos.find(s => s.idx === scrubberSelectedShotIdx)
+                            : priorShotsWithVideos[0];
+                          const currentVideoPath = selectedShotInfo?.shot.file_path || aiDirectorVideoPath;
+                          if (!currentVideoPath) return <div className="text-[10px] text-neutral-500">No prior videos available</div>;
+
+                          return (
+                            <>
+                              {priorShotsWithVideos.length > 1 && (
+                                <select
+                                  value={scrubberSelectedShotIdx ?? (priorShotsWithVideos[0]?.idx ?? '')}
+                                  onChange={(e) => { setScrubberSelectedShotIdx(parseInt(e.target.value)); setScrubberTime(0); }}
+                                  className="w-full bg-neutral-700 text-xs text-white rounded px-2 py-1 border border-neutral-600"
+                                >
+                                  {priorShotsWithVideos.map(({ shot, idx }) => (
+                                    <option key={idx} value={idx}>Shot {idx + 1}: {shot.subject || shot.action?.slice(0, 25)}</option>
+                                  ))}
+                                </select>
+                              )}
+                              <div className="bg-neutral-900 rounded overflow-hidden">
+                                <video
+                                  ref={scrubberVideoRef}
+                                  src={`http://127.0.0.1:8000/files/${currentVideoPath.replace('project_data/', '')}`}
+                                  className="w-full" muted
+                                  onLoadedMetadata={(e) => setScrubberDuration((e.target as HTMLVideoElement).duration)}
+                                />
+                                <div className="p-2 bg-neutral-800">
+                                  <input type="range" min={0} max={scrubberDuration || 1} step={0.05} value={scrubberTime}
+                                    onChange={(e) => { const t = parseFloat(e.target.value); setScrubberTime(t); if (scrubberVideoRef.current) scrubberVideoRef.current.currentTime = t; }}
+                                    className="w-full h-2 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-violet-500" />
+                                  <div className="flex justify-between text-[10px] text-neutral-400 mt-1">
+                                    <span>{scrubberTime.toFixed(2)}s</span><span>{scrubberDuration.toFixed(2)}s</span>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <select value={scrubberAssignTo} onChange={(e) => setScrubberAssignTo(e.target.value)}
+                                  className="flex-1 bg-neutral-700 text-xs text-white rounded px-2 py-1 border border-neutral-600">
+                                  <option value="scene">Scene</option>
+                                  {(sceneCast || []).map((c) => {
+                                    const char = characters.find(ch => ch.character_id === c.character_id);
+                                    return char ? <option key={char.character_id} value={char.name}>{char.name}</option> : null;
+                                  })}
+                                </select>
+                                <button className="px-3 py-1 bg-violet-500/20 text-violet-300 hover:bg-violet-500/30 rounded text-xs disabled:opacity-50"
+                                  disabled={extractingFrames.has('scrubber')}
+                                  onClick={async () => {
+                                    setExtractingFrames(prev => new Set(prev).add('scrubber'));
+                                    try {
+                                      const isChar = scrubberAssignTo !== 'scene';
+                                      const res = await fetch('http://127.0.0.1:8000/ai/extract-ref-frame', {
+                                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                          project_id: projectId, scene_id: selectedSceneId, video_path: currentVideoPath,
+                                          timestamp_seconds: scrubberTime, description: `Extracted @ ${scrubberTime.toFixed(2)}s`,
+                                          frame_type: isChar ? 'character' : 'scene', character_name: isChar ? scrubberAssignTo : undefined, auto_add_to_refs: false
+                                        })
+                                      });
+                                      const data = await res.json();
+                                      if (data.status === 'ok') {
+                                        setAIDirectorExtractedFrames(prev => [...prev, {
+                                          id: data.media_id, url: data.url, path: data.path,
+                                          type: isChar ? 'character' : 'scene', characterName: isChar ? scrubberAssignTo : undefined,
+                                          timestamp: scrubberTime, description: `@ ${scrubberTime.toFixed(2)}s`
+                                        }]);
+                                        await refreshMedia();
+                                      }
+                                    } finally {
+                                      setExtractingFrames(prev => { const n = new Set(prev); n.delete('scrubber'); return n; });
+                                    }
+                                  }}>
+                                  {extractingFrames.has('scrubber') ? '...' : 'Extract'}
+                                </button>
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </details>
+
+                    {/* Model Selection */}
+                    <div className="bg-neutral-800/50 p-3 rounded border border-neutral-700">
+                      <div className="text-[10px] text-cyan-400 font-bold mb-2">
+                        {aiDirectorFlowMode === 'image_first' ? 'IMAGE MODEL' : 'VIDEO MODEL & SETTINGS'}
+                      </div>
+                      <div className="grid grid-cols-4 gap-2">
+                        {aiDirectorFlowMode === 'image_first' ? (
+                          <div className="col-span-4">
+                            <select value={aiDirectorImageModel} onChange={(e) => { setAIDirectorImageModel(e.target.value); setAIDirectorActiveRefIds([]); }}
+                              className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                              <option value="google/nano-banana">NanoBanana (1-4 refs)</option>
+                              <option value="google/imagen-3.0-generate-002">Imagen 3 (no refs)</option>
+                              <option value="black-forest-labs/flux-1.1-pro">Flux 1.1 Pro (no refs)</option>
+                              <option value="black-forest-labs/flux-kontext-pro">Flux Kontext (1-4 refs)</option>
+                            </select>
+                          </div>
+                        ) : (
+                          <>
+                            <div>
+                              <label className="block text-[9px] text-neutral-500 mb-1">Model</label>
+                              <select value={aiDirectorVideoModel} onChange={(e) => { setAIDirectorVideoModel(e.target.value); setAIDirectorActiveRefIds([]); }}
+                                className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                                <option value="google/veo-3.1">Veo 3.1 Vertex (up to 3 refs)</option>
+                                <option value="google/veo-2">Veo 2 (up to 3 refs)</option>
+                                <option value="kwaivgi/kling-v1.6-pro">Kling 1.6 (1 ref)</option>
+                                <option value="minimax/video-01">MiniMax (1 ref)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[9px] text-neutral-500 mb-1">Duration</label>
+                              <select value={aiDirectorVideoDuration} onChange={(e) => setAIDirectorVideoDuration(parseInt(e.target.value))}
+                                className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                                <option value={5}>5 sec</option><option value={8}>8 sec</option><option value={10}>10 sec</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[9px] text-neutral-500 mb-1">Resolution</label>
+                              <select className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                                <option value="1080p">1080p</option><option value="720p">720p</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[9px] text-neutral-500 mb-1">Audio</label>
+                              <select value={aiDirectorGenerateAudio ? 'yes' : 'no'} onChange={(e) => setAIDirectorGenerateAudio(e.target.value === 'yes')}
+                                className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                                <option value="yes">Generate</option><option value="no">None</option>
+                              </select>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* WHAT WILL BE SENT - Debug Preview */}
+                    <details className="bg-orange-500/10 rounded border border-orange-500/30" open>
+                      <summary className="p-2 cursor-pointer text-[10px] text-orange-400 font-bold">
+                        📤 WHAT WILL BE SENT TO API
+                      </summary>
+                      <div className="p-3 pt-0 space-y-2">
+                        <div>
+                          <div className="text-[9px] text-neutral-500 mb-1">FINAL PROMPT:</div>
+                          <div className="text-[10px] text-neutral-200 bg-neutral-900 p-2 rounded font-mono whitespace-pre-wrap max-h-[80px] overflow-y-auto">
+                            {(() => {
+                              const basePrompt = aiDirectorFlowMode === 'image_first' ? aiDirectorImagePrompt : aiDirectorVideoPrompt;
+                              const styles = [sceneVisualStyle, sceneColorPalette ? `Colors: ${sceneColorPalette}` : '', sceneCameraStyle ? `Camera: ${sceneCameraStyle}` : ''].filter(Boolean);
+                              let fullPrompt = basePrompt;
+                              if (styles.length > 0) fullPrompt += `. Style: ${styles.join(', ')}`;
+                              if (!fullPrompt.toLowerCase().includes('photorealistic')) fullPrompt += ', photorealistic, live action, 35mm film';
+                              return fullPrompt || '(empty prompt)';
+                            })()}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-neutral-500 mb-1">REFERENCE IMAGES ({aiDirectorActiveRefIds.length}):</div>
+                          <div className="flex flex-wrap gap-1">
+                            {aiDirectorActiveRefIds.map(id => {
+                              const m = media.find(med => med.id === id);
+                              const extFrame = aiDirectorExtractedFrames.find(f => f.id === id);
+                              if (extFrame) {
+                                return <div key={id} className="text-[8px] bg-violet-900/50 px-1.5 py-0.5 rounded text-violet-300">{extFrame.path?.split('/').pop()}</div>;
+                              }
+                              return m ? (
+                                <div key={id} className="text-[8px] bg-neutral-800 px-1.5 py-0.5 rounded text-neutral-300">{m.path?.split('/').pop() || id}</div>
+                              ) : null;
+                            })}
+                            {aiDirectorActiveRefIds.length === 0 && (
+                              <div className="text-[9px] text-neutral-500 italic">No references selected</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </details>
+
+                    {/* ====== WHAT WILL BE SENT - PREVIEW SECTION ====== */}
+                    <details open className="bg-red-500/10 p-3 rounded border-2 border-red-500/50">
+                      <summary className="text-sm text-red-300 font-bold cursor-pointer">
+                        🔍 VERIFY: What will be sent to {aiDirectorFlowMode === 'image_first' ? aiDirectorImageModel : aiDirectorVideoModel}
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        <div className="text-[10px] text-neutral-400">
+                          <span className="text-red-300 font-bold">REFERENCE IMAGES ({aiDirectorActiveRefIds.length}):</span>
+                          {aiDirectorActiveRefIds.length === 0 ? (
+                            <div className="text-yellow-400 mt-1">⚠️ NO IMAGES SELECTED - generation will have no references!</div>
+                          ) : (
+                            <div className="mt-1 space-y-1">
+                              {aiDirectorActiveRefIds.map((id, idx) => {
+                                const extFrame = aiDirectorExtractedFrames.find(f => f.id === id);
+                                const m = media.find(med => med.id === id);
+                                const path = extFrame?.path || m?.path || 'UNKNOWN';
+                                const url = extFrame?.url || m?.url || '';
+                                return (
+                                  <div key={id} className="flex items-center gap-2 bg-neutral-900 p-1 rounded">
+                                    <span className="text-green-400 font-mono">{idx + 1}.</span>
+                                    {url && <img src={`http://127.0.0.1:8000${url}`} className="w-12 h-8 object-cover rounded" alt="" />}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-[9px] text-neutral-300 truncate font-mono">{path}</div>
+                                      <div className="text-[8px] text-neutral-500">ID: {id}</div>
+                                    </div>
+                                    <button
+                                      className="text-[8px] px-1 py-0.5 bg-neutral-700 rounded text-neutral-300 hover:bg-neutral-600"
+                                      onClick={() => { navigator.clipboard.writeText(path); alert(`Copied: ${path}`); }}
+                                    >
+                                      Copy Path
+                                    </button>
+                                    <button
+                                      className="text-[8px] px-1 py-0.5 bg-blue-500/30 rounded text-blue-300 hover:bg-blue-500/40"
+                                      onClick={() => fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) })}
+                                    >
+                                      Finder
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </details>
+
+                    {/* Action Buttons */}
+                    <div className="flex justify-between pt-2 border-t border-neutral-700">
+                      <Dialog.Close asChild>
+                        <button className="button text-sm">Cancel</button>
+                      </Dialog.Close>
+                      <div className="flex gap-2">
+                        {aiDirectorFlowMode === 'image_first' ? (
+                          <button
+                            className="button text-sm bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
+                            disabled={aiDirectorExecuting || !aiDirectorImagePrompt}
+                            onClick={async () => {
+                              if (!aiDirectorImagePrompt) return;
+                              setAIDirectorExecuting(true);
+                              try {
+                                // Only use refs that are actively selected
+                                const refPaths = aiDirectorActiveRefIds.map(id => {
+                                  const extFrame = aiDirectorExtractedFrames.find(f => f.id === id);
+                                  if (extFrame) return extFrame.path;
+                                  return media.find(m => m.id === id)?.path;
+                                }).filter(Boolean) as string[];
+
+                                let fullPrompt = aiDirectorImagePrompt;
+                                const styles = [sceneVisualStyle, sceneColorPalette ? `Colors: ${sceneColorPalette}` : '', sceneCameraStyle ? `Camera: ${sceneCameraStyle}` : ''].filter(Boolean);
+                                if (styles.length > 0) fullPrompt += `. Style: ${styles.join(', ')}`;
+                                if (!fullPrompt.toLowerCase().includes('photorealistic')) fullPrompt += ', photorealistic, live action, 35mm film';
+
+                                // DETAILED LOGGING
+                                console.log('='.repeat(60));
+                                console.log('[AI DIRECTOR] SENDING TO REPLICATE');
+                                console.log('='.repeat(60));
+                                console.log('Model:', aiDirectorImageModel);
+                                console.log('Prompt:', fullPrompt);
+                                console.log('Reference Images (' + refPaths.length + '):');
+                                refPaths.forEach((p, i) => console.log(`  ${i + 1}. ${p}`));
+                                console.log('Selected IDs:', aiDirectorActiveRefIds);
+                                console.log('='.repeat(60));
+
+                                const imgRes = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    project_id: projectId, scene_id: selectedSceneId, prompt: fullPrompt,
+                                    provider: 'replicate', media_type: 'image', model: aiDirectorImageModel,
+                                    aspect_ratio: '16:9', reference_images: refPaths
+                                  })
+                                });
+                                const imgData = await imgRes.json();
+                                if (imgRes.ok && imgData.status === 'ok' && imgData.images?.[0]) {
+                                  setAIDirectorPreviewImage(imgData.images[0]);
+                                  // Copy image refs to video refs for step 2, clear for new selection
+                                  setAIDirectorVideoRefIds([]);
+                                  await refreshMedia();
+                                  setAIDirectorStep('preview');
+                                } else {
+                                  throw new Error(imgData.detail || 'Failed to generate image');
+                                }
+                              } catch (err) {
+                                alert(`Error: ${err}`);
+                              } finally {
+                                setAIDirectorExecuting(false);
+                              }
+                            }}
+                          >
+                            {aiDirectorExecuting ? 'Generating...' : 'Generate Start Frame →'}
+                          </button>
+                        ) : (
+                          <button
+                            className="button text-sm bg-green-500/20 text-green-300 hover:bg-green-500/30"
+                            disabled={aiDirectorExecuting || !aiDirectorVideoPrompt}
+                            onClick={async () => {
+                              if (aiDirectorShotIdx === null || !aiDirectorVideoPrompt) return;
+                              const shot = sceneDetail?.shots?.[aiDirectorShotIdx];
+                              if (!shot) return;
+
+                              setAIDirectorExecuting(true);
+                              const jobId = startJob(`AI Director Video: ${shot.shot_id}`);
+
+                              try {
+                                // Only use refs that are actively selected
+                                const refPaths = aiDirectorActiveRefIds.map(id => {
+                                  const extFrame = aiDirectorExtractedFrames.find(f => f.id === id);
+                                  if (extFrame) return extFrame.path;
+                                  return media.find(m => m.id === id)?.path;
+                                }).filter(Boolean) as string[];
+
+                                let fullPrompt = aiDirectorVideoPrompt;
+                                const styles = [sceneVisualStyle, sceneColorPalette ? `Colors: ${sceneColorPalette}` : '', sceneCameraStyle ? `Camera: ${sceneCameraStyle}` : ''].filter(Boolean);
+                                if (styles.length > 0) fullPrompt += `. Style: ${styles.join(', ')}`;
+                                if (!fullPrompt.toLowerCase().includes('live action')) fullPrompt += ', live action, cinematic';
+
+                                // DETAILED LOGGING
+                                console.log('='.repeat(60));
+                                console.log('[AI DIRECTOR] SENDING VIDEO REQUEST');
+                                console.log('='.repeat(60));
+                                console.log('Model:', aiDirectorVideoModel);
+                                console.log('Prompt:', fullPrompt);
+                                console.log('Reference Images (' + refPaths.length + '):');
+                                refPaths.forEach((p, i) => console.log(`  ${i + 1}. ${p}`));
+                                console.log('Selected IDs:', aiDirectorActiveRefIds);
+                                console.log('='.repeat(60));
+
+                                // Determine provider based on model - Veo uses Vertex, others use Replicate
+                                const videoProvider = aiDirectorVideoModel.startsWith('google/veo') ? 'vertex' : 'replicate';
+                                // Veo via Vertex has different duration constraints
+                                const videoDuration = videoProvider === 'vertex' ? aiDirectorVideoDuration :
+                                  ([4, 6, 8].includes(aiDirectorVideoDuration) ? aiDirectorVideoDuration : 8);
+
+                                const vidRes = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    project_id: projectId, scene_id: selectedSceneId, prompt: fullPrompt,
+                                    shot_id: shot.shot_id, provider: videoProvider, media_type: 'video',
+                                    model: aiDirectorVideoModel, duration: videoDuration,
+                                    resolution: '1080p', aspect_ratio: '16:9',
+                                    reference_images: refPaths.length > 0 ? refPaths : undefined,
+                                    generate_audio: aiDirectorGenerateAudio
+                                  })
+                                });
+                                const vidData = await vidRes.json();
+
+                                if (vidRes.ok && vidData.status === 'ok') {
+                                  await refreshMedia();
+                                  const sceneRes = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`);
+                                  setSceneDetail((await sceneRes.json()).scene ?? null);
+                                  finishJob(jobId, 'success');
+                                  setIsAIDirectorOpen(false);
+                                } else {
+                                  throw new Error(vidData.detail || 'Failed');
+                                }
+                              } catch (err) {
+                                finishJob(jobId, 'error');
+                                alert(`Error: ${err}`);
+                              } finally {
+                                setAIDirectorExecuting(false);
+                              }
+                            }}
+                          >
+                            {aiDirectorExecuting ? 'Generating...' : 'Generate Video →'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* STEP 2: PREVIEW & GENERATE VIDEO */}
+                {aiDirectorStep === 'preview' && aiDirectorPreviewImage && (
+                  <>
+                    {/* Generated Start Frame Preview */}
+                    <div className="bg-neutral-800/50 p-3 rounded border border-neutral-700">
+                      <div className="flex justify-between items-center mb-2">
+                        <div className="text-[10px] text-cyan-400 font-bold">GENERATED START FRAME</div>
+                        <button className="text-[9px] px-1.5 py-0.5 rounded bg-neutral-700 hover:bg-neutral-600"
+                          onClick={() => window.open(`http://127.0.0.1:8000/files/${aiDirectorPreviewImage.replace('project_data/', '')}`, '_blank')}>
+                          View Full
+                        </button>
+                      </div>
+                      <img
+                        src={`http://127.0.0.1:8000/files/${aiDirectorPreviewImage.replace('project_data/', '')}`}
+                        alt="Preview" className="w-full rounded border border-neutral-600 cursor-pointer max-h-[150px] object-contain bg-black"
+                        onClick={() => window.open(`http://127.0.0.1:8000/files/${aiDirectorPreviewImage.replace('project_data/', '')}`, '_blank')}
+                      />
+                    </div>
+
+                    {/* Video Settings */}
+                    <div className="bg-green-500/10 p-3 rounded border border-green-500/30">
+                      <div className="text-[10px] text-green-400 font-bold mb-2">VIDEO GENERATION</div>
+
+                      {/* Video Prompt */}
+                      <div className="mb-3">
+                        <label className="block text-[9px] text-neutral-500 mb-1">Video Prompt (include full character descriptions!)</label>
+                        <textarea
+                          value={aiDirectorVideoPrompt}
+                          onChange={(e) => setAIDirectorVideoPrompt(e.target.value)}
+                          className="w-full bg-neutral-900 text-xs text-neutral-200 rounded px-2 py-1.5 border border-neutral-600 resize-none"
+                          rows={3}
+                        />
+                      </div>
+
+                      {/* Image Mode - Start Frame vs Reference */}
+                      <div className="flex gap-2 mb-3">
+                        <label className={`flex-1 flex items-center gap-2 p-2 rounded cursor-pointer ${aiDirectorVideoMode === 'start_frame' ? 'bg-green-500/20 border border-green-500/50' : 'bg-neutral-800'}`}>
+                          <input type="radio" checked={aiDirectorVideoMode === 'start_frame'} onChange={() => { setAIDirectorVideoMode('start_frame'); setAIDirectorVideoRefIds([]); }} />
+                          <div className="text-[10px]">
+                            <div className="text-neutral-200">Start Frame</div>
+                            <div className="text-neutral-500">Exact first frame (no extra refs)</div>
+                          </div>
+                        </label>
+                        <label className={`flex-1 flex items-center gap-2 p-2 rounded cursor-pointer ${aiDirectorVideoMode === 'ref_image' ? 'bg-green-500/20 border border-green-500/50' : 'bg-neutral-800'}`}>
+                          <input type="radio" checked={aiDirectorVideoMode === 'ref_image'} onChange={() => setAIDirectorVideoMode('ref_image')} />
+                          <div className="text-[10px]">
+                            <div className="text-neutral-200">Reference Mode</div>
+                            <div className="text-neutral-500">Style guide + add more refs (up to 3)</div>
+                          </div>
+                        </label>
+                      </div>
+
+                      {/* Additional Reference Images (only in ref_image mode) */}
+                      {aiDirectorVideoMode === 'ref_image' && (
+                        <div className="mb-3 p-2 bg-neutral-900/50 rounded border border-neutral-700">
+                          <div className="text-[9px] text-neutral-400 mb-2">
+                            Additional References ({aiDirectorVideoRefIds.length}/2 - generated image counts as 1)
+                          </div>
+                          <div className="grid grid-cols-8 gap-1 max-h-[60px] overflow-y-auto">
+                            {/* Scene Master Images */}
+                            {(sceneMasterImageIds || []).map((id) => {
+                              const m = media.find(med => med.id === id);
+                              if (!m) return null;
+                              const isActive = aiDirectorVideoRefIds.includes(id);
+                              return (
+                                <button key={id}
+                                  className={`relative aspect-video rounded overflow-hidden border transition-all ${
+                                    isActive ? 'border-green-500 ring-1 ring-green-500/50' : 'border-neutral-700 opacity-50 hover:opacity-80'
+                                  }`}
+                                  onClick={() => {
+                                    if (isActive) {
+                                      setAIDirectorVideoRefIds(prev => prev.filter(i => i !== id));
+                                    } else if (aiDirectorVideoRefIds.length < 2) {
+                                      setAIDirectorVideoRefIds(prev => [...prev, id]);
+                                    }
+                                  }}
+                                  onContextMenu={(e) => { e.preventDefault(); fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: m.path }) }); }}
+                                  title={`Scene: ${id} (right-click: Finder)`}
+                                >
+                                  <img src={`http://127.0.0.1:8000${m.url}`} className="w-full h-full object-cover" alt="" />
+                                  <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-[5px] text-green-400 px-0.5 truncate">Scene</div>
+                                </button>
+                              );
+                            })}
+                            {/* Character Refs */}
+                            {characters.map(char => {
+                              const castEntry = sceneCast?.find(c => c.character_id === char.character_id);
+                              const refIds = castEntry?.scene_reference_ids?.length ? castEntry.scene_reference_ids : (char.reference_image_ids || []);
+                              return refIds.map((id: string) => {
+                                const m = media.find(med => med.id === id);
+                                if (!m) return null;
+                                const isActive = aiDirectorVideoRefIds.includes(id);
+                                return (
+                                  <button key={id}
+                                    className={`relative aspect-video rounded overflow-hidden border transition-all ${
+                                      isActive ? 'border-blue-500 ring-1 ring-blue-500/50' : 'border-neutral-700 opacity-50 hover:opacity-80'
+                                    }`}
+                                    onClick={() => {
+                                      if (isActive) {
+                                        setAIDirectorVideoRefIds(prev => prev.filter(i => i !== id));
+                                      } else if (aiDirectorVideoRefIds.length < 2) {
+                                        setAIDirectorVideoRefIds(prev => [...prev, id]);
+                                      }
+                                    }}
+                                    onContextMenu={(e) => { e.preventDefault(); fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: m.path }) }); }}
+                                    title={`${char.name}: ${id} (right-click: Finder)`}
+                                  >
+                                    <img src={`http://127.0.0.1:8000${m.url}`} className="w-full h-full object-cover" alt="" />
+                                    <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-[5px] text-blue-400 px-0.5 truncate">{char.name}</div>
+                                  </button>
+                                );
+                              });
+                            })}
+                            {/* Extracted Frames */}
+                            {aiDirectorExtractedFrames.map((frame, i) => {
+                              const isActive = aiDirectorVideoRefIds.includes(frame.id);
+                              return (
+                                <button key={`ext-${i}`}
+                                  className={`relative aspect-video rounded overflow-hidden border transition-all ${
+                                    isActive ? 'border-violet-500 ring-1 ring-violet-500/50' : 'border-neutral-700 opacity-50 hover:opacity-80'
+                                  }`}
+                                  onClick={() => {
+                                    if (isActive) {
+                                      setAIDirectorVideoRefIds(prev => prev.filter(i => i !== frame.id));
+                                    } else if (aiDirectorVideoRefIds.length < 2) {
+                                      setAIDirectorVideoRefIds(prev => [...prev, frame.id]);
+                                    }
+                                  }}
+                                  onContextMenu={(e) => { e.preventDefault(); fetch('http://127.0.0.1:8000/system/reveal-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: frame.path }) }); }}
+                                  title={`Extracted: ${frame.description} (right-click: Finder)`}
+                                >
+                                  <img src={`http://127.0.0.1:8000${frame.url}`} className="w-full h-full object-cover" alt="" />
+                                  <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-[5px] text-violet-400 px-0.5 truncate">Ext</div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Settings Row */}
+                      <div className="grid grid-cols-4 gap-2">
+                        <div>
+                          <label className="block text-[9px] text-neutral-500 mb-1">Model</label>
+                          <select value={aiDirectorVideoModel} onChange={(e) => setAIDirectorVideoModel(e.target.value)}
+                            className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                            <option value="google/veo-3.1">Veo 3.1 (Vertex)</option>
+                            <option value="google/veo-2">Veo 2</option>
+                            <option value="kwaivgi/kling-v1.6-pro">Kling 1.6</option>
+                            <option value="minimax/video-01">MiniMax</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[9px] text-neutral-500 mb-1">Duration</label>
+                          <select value={aiDirectorVideoDuration} onChange={(e) => setAIDirectorVideoDuration(parseInt(e.target.value))}
+                            className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                            <option value={5}>5 sec</option>
+                            <option value={8}>8 sec</option>
+                            <option value={10}>10 sec</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[9px] text-neutral-500 mb-1">Resolution</label>
+                          <select className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                            <option value="1080p">1080p</option>
+                            <option value="720p">720p</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[9px] text-neutral-500 mb-1">Audio</label>
+                          <select value={aiDirectorGenerateAudio ? 'yes' : 'no'} onChange={(e) => setAIDirectorGenerateAudio(e.target.value === 'yes')}
+                            className="w-full bg-neutral-700 text-[10px] text-white rounded px-1.5 py-1 border border-neutral-600">
+                            <option value="yes">Generate</option>
+                            <option value="no">None</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* WHAT WILL BE SENT - Debug Preview */}
+                    <details className="bg-orange-500/10 rounded border border-orange-500/30" open>
+                      <summary className="p-2 cursor-pointer text-[10px] text-orange-400 font-bold">
+                        📤 WHAT WILL BE SENT TO VIDEO API
+                      </summary>
+                      <div className="p-3 pt-0 space-y-2">
+                        <div>
+                          <div className="text-[9px] text-neutral-500 mb-1">FINAL VIDEO PROMPT:</div>
+                          <div className="text-[10px] text-neutral-200 bg-neutral-900 p-2 rounded font-mono whitespace-pre-wrap max-h-[60px] overflow-y-auto">
+                            {(() => {
+                              const styles = [sceneVisualStyle, sceneColorPalette ? `Colors: ${sceneColorPalette}` : '', sceneCameraStyle ? `Camera: ${sceneCameraStyle}` : ''].filter(Boolean);
+                              let fullPrompt = aiDirectorVideoPrompt;
+                              if (styles.length > 0) fullPrompt += `. Style: ${styles.join(', ')}`;
+                              if (!fullPrompt.toLowerCase().includes('live action')) fullPrompt += ', live action, cinematic';
+                              return fullPrompt || '(empty prompt)';
+                            })()}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-neutral-500 mb-1">
+                            {aiDirectorVideoMode === 'start_frame' ? 'START FRAME:' : `REFERENCE IMAGES (${1 + aiDirectorVideoRefIds.length}/3):`}
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            <div className="text-[8px] bg-green-900/50 px-1.5 py-0.5 rounded text-green-300">
+                              {aiDirectorPreviewImage?.split('/').pop()} {aiDirectorVideoMode === 'start_frame' ? '(start frame)' : '(generated)'}
+                            </div>
+                            {aiDirectorVideoMode === 'ref_image' && aiDirectorVideoRefIds.map(id => {
+                              const m = media.find(med => med.id === id);
+                              const frame = aiDirectorExtractedFrames.find(f => f.id === id);
+                              const filename = m?.path?.split('/').pop() || frame?.path?.split('/').pop() || id;
+                              return (
+                                <div key={id} className="text-[8px] bg-neutral-800 px-1.5 py-0.5 rounded text-neutral-300">{filename}</div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    </details>
+
+                    {/* Action Buttons */}
+                    <div className="flex justify-between pt-2 border-t border-neutral-700">
+                      <button className="button text-sm" onClick={() => { setAIDirectorStep('plan'); setAIDirectorPreviewImage(null); setAIDirectorVideoRefIds([]); }}>
+                        ← Back
+                      </button>
+                      <div className="flex gap-2">
+                        <Dialog.Close asChild>
+                          <button className="button text-sm">Cancel</button>
+                        </Dialog.Close>
+                        <button
+                          className="button text-sm bg-green-500/20 text-green-300 hover:bg-green-500/30"
+                          disabled={aiDirectorExecuting || !aiDirectorVideoPrompt}
+                          onClick={async () => {
+                            if (aiDirectorShotIdx === null || !aiDirectorPreviewImage) return;
+                            const shot = sceneDetail?.shots?.[aiDirectorShotIdx];
+                            if (!shot) return;
+
+                            setAIDirectorExecuting(true);
+                            const jobId = startJob(`AI Director: ${shot.shot_id}`);
+
+                            try {
+                              // Save start frame to shot
+                              await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}/shots/${shot.shot_id}`, {
+                                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ start_frame_path: aiDirectorPreviewImage })
+                              });
+
+                              // Build full prompt with styles
+                              let fullPrompt = aiDirectorVideoPrompt;
+                              const styles = [sceneVisualStyle, sceneColorPalette ? `Colors: ${sceneColorPalette}` : '', sceneCameraStyle ? `Camera: ${sceneCameraStyle}` : ''].filter(Boolean);
+                              if (styles.length > 0) fullPrompt += `. Style: ${styles.join(', ')}`;
+                              if (!fullPrompt.toLowerCase().includes('live action')) fullPrompt += ', live action, cinematic';
+
+                              // Build reference images array for ref mode
+                              const refPaths: string[] = [];
+                              if (aiDirectorVideoMode === 'ref_image') {
+                                refPaths.push(aiDirectorPreviewImage); // Generated image first
+                                for (const id of aiDirectorVideoRefIds) {
+                                  const m = media.find(med => med.id === id);
+                                  const frame = aiDirectorExtractedFrames.find(f => f.id === id);
+                                  const path = m?.path || frame?.path;
+                                  if (path) refPaths.push(path);
+                                }
+                              }
+
+                              // Determine provider - Veo uses Vertex, others use Replicate
+                              const videoProvider = aiDirectorVideoModel.startsWith('google/veo') ? 'vertex' : 'replicate';
+                              // Replicate has strict duration constraints (4, 6, 8)
+                              const videoDuration = videoProvider === 'vertex' ? aiDirectorVideoDuration :
+                                ([4, 6, 8].includes(aiDirectorVideoDuration) ? aiDirectorVideoDuration : 8);
+
+                              console.log('[AI DIRECTOR] Generating video with:', {
+                                prompt: fullPrompt,
+                                mode: aiDirectorVideoMode,
+                                provider: videoProvider,
+                                startFrame: aiDirectorVideoMode === 'start_frame' ? aiDirectorPreviewImage : undefined,
+                                refs: aiDirectorVideoMode === 'ref_image' ? refPaths : undefined,
+                                model: aiDirectorVideoModel,
+                                duration: videoDuration
+                              });
+
+                              const vidRes = await fetch('http://127.0.0.1:8000/ai/generate-shot', {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  project_id: projectId, scene_id: selectedSceneId, prompt: fullPrompt,
+                                  shot_id: shot.shot_id, provider: videoProvider,
+                                  media_type: 'video', model: aiDirectorVideoModel, duration: videoDuration,
+                                  resolution: '1080p', aspect_ratio: '16:9',
+                                  start_frame_path: aiDirectorVideoMode === 'start_frame' ? aiDirectorPreviewImage : undefined,
+                                  reference_images: aiDirectorVideoMode === 'ref_image' ? refPaths : undefined,
+                                  generate_audio: aiDirectorGenerateAudio
+                                })
+                              });
+                              const vidData = await vidRes.json();
+
+                              if (vidRes.ok && vidData.status === 'ok') {
+                                await refreshMedia();
+                                const sceneRes = await fetch(`http://127.0.0.1:8000/storage/${projectId}/scenes/${selectedSceneId}`);
+                                setSceneDetail((await sceneRes.json()).scene ?? null);
+                                finishJob(jobId, 'success');
+                                setIsAIDirectorOpen(false);
+                              } else {
+                                throw new Error(vidData.detail || 'Failed');
+                              }
+                            } catch (err) {
+                              finishJob(jobId, 'error');
+                              alert(`Error: ${err}`);
+                            } finally {
+                              setAIDirectorExecuting(false);
+                            }
+                          }}
+                        >
+                          {aiDirectorExecuting ? 'Generating...' : 'Generate Video →'}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             ) : (
               <div className="text-center py-8 text-neutral-500">

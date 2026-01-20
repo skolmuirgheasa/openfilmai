@@ -100,28 +100,41 @@ def list_media(project_id: str, include_archived: bool = False) -> List[Dict[str
 
 def add_media(project_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
     import time as time_module
+    import os
     meta = read_metadata(project_id)
     media = meta.get("media", [])
-    
-    # Check for duplicate IDs and append (1), (2), etc. if needed
+
+    # Check for duplicate IDs and use timestamp prefix to ensure uniqueness
     original_id = item.get("id", "")
     if original_id:
         existing_ids = {m.get("id") for m in media}
         if original_id in existing_ids:
-            # Find the next available number
-            counter = 1
+            # Use timestamp to create unique ID (avoids spaces/parentheses issues)
+            ts = int(time_module.time())
             base_name, ext = original_id.rsplit(".", 1) if "." in original_id else (original_id, "")
-            while True:
-                new_id = f"{base_name} ({counter}).{ext}" if ext else f"{base_name} ({counter})"
-                if new_id not in existing_ids:
-                    item["id"] = new_id
-                    # Also update path and url if they exist
-                    if "path" in item and original_id in item["path"]:
-                        item["path"] = item["path"].replace(original_id, new_id)
-                    if "url" in item and original_id in item["url"]:
-                        item["url"] = item["url"].replace(original_id, new_id)
-                    break
-                counter += 1
+            new_id = f"{ts}_{base_name}.{ext}" if ext else f"{ts}_{base_name}"
+
+            # Try to rename the actual file on disk if it exists
+            if "path" in item:
+                old_path = Path(item["path"].replace("project_data/", ""))
+                full_old_path = Path("project_data") / old_path
+                if full_old_path.exists():
+                    new_filename = new_id
+                    new_path = full_old_path.parent / new_filename
+                    try:
+                        full_old_path.rename(new_path)
+                        rel_new_path = str(new_path.relative_to(Path("project_data")))
+                        item["path"] = f"project_data/{rel_new_path}"
+                        item["url"] = f"/files/{rel_new_path}"
+                    except Exception as e:
+                        print(f"[STORAGE] Warning: Could not rename file {full_old_path} -> {new_path}: {e}")
+
+            item["id"] = new_id
+            # Update path/url if not already updated by rename
+            if "path" in item and original_id in item["path"]:
+                item["path"] = item["path"].replace(original_id, new_id)
+            if "url" in item and original_id in item["url"]:
+                item["url"] = item["url"].replace(original_id, new_id)
     
     # Auto-tag source if not specified
     if "source" not in item:

@@ -169,19 +169,35 @@ class ReplicateClient:
             if aspect_ratio:
                 inputs["aspect_ratio"] = aspect_ratio
             if reference_images and len(reference_images) > 0:
-                print(f"[REPLICATE] NanoBanana: Processing {len(reference_images)} reference image(s)")
+                import os
+                print("=" * 60)
+                print(f"[REPLICATE] NanoBanana: REFERENCE IMAGES BEING SENT")
+                print("=" * 60)
+                print(f"Total images requested: {len(reference_images)}")
                 data_urls = []
                 for i, ref in enumerate(reference_images):
+                    print(f"\n--- Image {i+1} ---")
+                    print(f"  Path: {ref}")
+                    # Check if file exists
+                    full_path = ref
+                    if not os.path.isabs(ref):
+                        full_path = os.path.join(os.getcwd(), ref)
+                    print(f"  Full path: {full_path}")
+                    print(f"  Exists: {os.path.exists(full_path)}")
+                    if os.path.exists(full_path):
+                        print(f"  File size: {os.path.getsize(full_path)} bytes")
                     try:
                         data_url = self._to_data_url(ref)
                         # Log the size of the base64 data
                         b64_size = len(data_url) - data_url.index(',') - 1 if ',' in data_url else len(data_url)
-                        print(f"  Image {i+1}: {ref} -> base64 size: {b64_size} chars (~{b64_size * 3 // 4 // 1024} KB)")
+                        print(f"  Base64 size: {b64_size} chars (~{b64_size * 3 // 4 // 1024} KB)")
+                        print(f"  Status: ✓ SUCCESSFULLY ENCODED")
                         data_urls.append(data_url)
                     except Exception as e:
-                        print(f"  Image {i+1}: {ref} -> FAILED to convert: {e}")
+                        print(f"  Status: ✗ FAILED - {e}")
+                print("=" * 60)
                 inputs["image_input"] = data_urls
-                print(f"[REPLICATE] NanoBanana: Successfully encoded {len(data_urls)} images")
+                print(f"[REPLICATE] NanoBanana: Sending {len(data_urls)} images to API")
         else:
             # Generic image model handling
             if aspect_ratio:
@@ -195,10 +211,21 @@ class ReplicateClient:
         # Add any additional kwargs
         inputs.update(kwargs)
 
-        # Log the full request for debugging
+        # Build actual request payload
         request_payload = {"input": inputs}
-        print(f"[REPLICATE] Full request payload: {request_payload}")
-        
+
+        # Log the request structure (not the full base64 data)
+        request_summary = {"input": {}}
+        for k, v in inputs.items():
+            if k in ("image_input", "reference_images", "image") and v:
+                if isinstance(v, list):
+                    request_summary["input"][k] = f"[{len(v)} data URLs]"
+                else:
+                    request_summary["input"][k] = "[1 data URL]"
+            else:
+                request_summary["input"][k] = v
+        print(f"[REPLICATE] Request structure: {request_summary}")
+
         r = requests.post(url, headers=self._headers(), json=request_payload, timeout=self.timeout)
         r.raise_for_status()
         data = r.json()

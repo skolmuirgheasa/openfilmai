@@ -40,7 +40,18 @@ class VertexClient:
     def _model_path(self) -> str:
         if self.model.startswith("publishers/"):
             return self.model
-        return f"publishers/google/models/{self.model}"
+        # Strip google/ prefix if present (frontend sends google/veo-3.1, but API wants just veo-3.1-...)
+        model_id = self.model
+        if model_id.startswith("google/"):
+            model_id = model_id[7:]  # Remove "google/" prefix
+        # Map friendly names to actual Vertex model IDs
+        model_map = {
+            "veo-3.1": "veo-3.1-fast-generate-preview",
+            "veo-3": "veo-3.1-fast-generate-preview",
+            "veo-2": "veo-2.0-generate-001",
+        }
+        model_id = model_map.get(model_id, model_id)
+        return f"publishers/google/models/{model_id}"
 
     def _upload_image_to_gcs(self, image_path: str) -> str:
         from google.cloud import storage
@@ -78,13 +89,28 @@ class VertexClient:
         url = f"{base}/projects/{self.project_id}/locations/{self.location}/{self._model_path()}:predictLongRunning"
 
         instance: Dict[str, Any] = {"prompt": prompt}
-        
-        # Veo 3.1 fast only supports start and/or end frames, not general reference images
-        # reference_images parameter is accepted for API compatibility but ignored
-        if first_frame_image:
-            instance["image"] = {"gcsUri": self._upload_image_to_gcs(first_frame_image), "mimeType": "image/jpeg"}
+
+        # Veo 3.1 only supports start frame (image) and optionally end frame (lastFrame)
+        # It does NOT support general reference images like NanoBanana does
+        # If reference_images are provided but no start frame, use the FIRST ref as start frame
+        actual_start_frame = first_frame_image
+        if not actual_start_frame and reference_images and len(reference_images) > 0:
+            actual_start_frame = reference_images[0]
+            print(f"[VERTEX] No start_frame provided, using first reference image: {actual_start_frame}")
+
+        if actual_start_frame:
+            print(f"[VERTEX] Uploading start frame to GCS: {actual_start_frame}")
+            gcs_uri = self._upload_image_to_gcs(actual_start_frame)
+            instance["image"] = {"gcsUri": gcs_uri, "mimeType": "image/jpeg"}
+            print(f"[VERTEX] Start frame uploaded: {gcs_uri}")
+        else:
+            print("[VERTEX] WARNING: No start frame or reference images provided - generating from prompt only")
+
         if last_frame_image:
-            instance["lastFrame"] = {"gcsUri": self._upload_image_to_gcs(last_frame_image), "mimeType": "image/jpeg"}
+            print(f"[VERTEX] Uploading end frame to GCS: {last_frame_image}")
+            gcs_uri = self._upload_image_to_gcs(last_frame_image)
+            instance["lastFrame"] = {"gcsUri": gcs_uri, "mimeType": "image/jpeg"}
+            print(f"[VERTEX] End frame uploaded: {gcs_uri}")
 
         params: Dict[str, Any] = {"sampleCount": 1}
         
@@ -120,7 +146,11 @@ class VertexClient:
         scene_context: str,
         next_shot_info: Dict[str, Any],
         available_characters: List[Dict[str, Any]],
-        visual_style: Optional[str] = None
+        visual_style: Optional[str] = None,
+        character_ref_images: Optional[Dict[str, List[str]]] = None,
+        scene_cast_ids: Optional[List[str]] = None,
+        prior_shots_summary: Optional[List[str]] = None,
+        additional_video_paths: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Watch a video and plan the complete next shot - refs, prompts, everything.
@@ -134,65 +164,164 @@ class VertexClient:
             next_shot_info: Dict with the planned shot's action, camera_angle, subject, dialogue, etc.
             available_characters: List of character dicts with name, reference_image_ids, style_tokens
             visual_style: Overall visual style notes
+            character_ref_images: Dict mapping character names to their reference image paths
+            scene_cast_ids: List of character IDs that are IN this scene's cast
+            prior_shots_summary: List of summaries of prior shots for narrative context
 
         Returns:
             Complete shot execution plan
         """
         import mimetypes
 
-        # Read and encode video
+        import os
+
+        print("=" * 70)
+        print("[GEMINI DIRECTOR] VIDEOS BEING SENT TO GEMINI FOR ANALYSIS")
+        print("=" * 70)
+
+        # Read and encode primary video (the immediately previous shot)
+        print(f"\n--- PRIMARY VIDEO (immediately previous shot) ---")
+        print(f"  Path: {video_path}")
+        print(f"  Exists: {os.path.exists(video_path)}")
+        if os.path.exists(video_path):
+            file_size = os.path.getsize(video_path)
+            print(f"  File size: {file_size} bytes ({file_size // 1024} KB)")
         mime_type = mimetypes.guess_type(video_path)[0] or "video/mp4"
+        print(f"  MIME type: {mime_type}")
         with open(video_path, "rb") as f:
             video_data = base64.b64encode(f.read()).decode()
+        print(f"  Base64 size: {len(video_data)} chars (~{len(video_data) * 3 // 4 // 1024} KB)")
+        print(f"  Status: ✓ SUCCESSFULLY LOADED")
+
+        # Read and encode additional context videos (earlier shots)
+        additional_videos_data: List[Dict[str, str]] = []
+        if additional_video_paths:
+            print(f"\n--- ADDITIONAL CONTEXT VIDEOS ({len(additional_video_paths)}) ---")
+            for idx, add_path in enumerate(additional_video_paths):
+                print(f"\n  Context Video #{idx + 1}:")
+                print(f"    Path: {add_path}")
+                print(f"    Exists: {os.path.exists(add_path)}")
+                try:
+                    if os.path.exists(add_path):
+                        file_size = os.path.getsize(add_path)
+                        print(f"    File size: {file_size} bytes ({file_size // 1024} KB)")
+                    add_mime = mimetypes.guess_type(add_path)[0] or "video/mp4"
+                    print(f"    MIME type: {add_mime}")
+                    with open(add_path, "rb") as f:
+                        add_data = base64.b64encode(f.read()).decode()
+                    print(f"    Base64 size: {len(add_data)} chars (~{len(add_data) * 3 // 4 // 1024} KB)")
+                    print(f"    Status: ✓ SUCCESSFULLY LOADED")
+                    additional_videos_data.append({"mime": add_mime, "data": add_data, "path": add_path})
+                except Exception as e:
+                    print(f"    Status: ✗ FAILED - {e}")
+        else:
+            print(f"\n  No additional context videos requested")
 
         # Use Gemini 2.0 Flash for video analysis
         url = f"https://us-central1-aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{self.location}/publishers/google/models/gemini-2.0-flash-001:generateContent"
 
-        # Build character info string
+        # Build character info string with scene cast indication
         char_info = []
+        scene_cast_ids = scene_cast_ids or []
+        character_ref_images = character_ref_images or {}
         for c in available_characters:
-            char_str = f"- {c.get('name', 'Unknown')}"
+            char_name = c.get('name', 'Unknown')
+            char_id = c.get('character_id', '')
+            in_scene = char_id in scene_cast_ids
+            char_str = f"- {char_name}"
+            if in_scene:
+                char_str += " [IN THIS SCENE]"
             if c.get('style_tokens'):
                 char_str += f": {c['style_tokens']}"
-            num_refs = len(c.get('reference_image_ids', []))
-            char_str += f" ({num_refs} reference images available)"
+            # Note if we have reference images for this character
+            if char_name in character_ref_images:
+                char_str += f" (REFERENCE IMAGES PROVIDED BELOW - study them carefully!)"
             char_info.append(char_str)
         characters_str = "\n".join(char_info) if char_info else "No characters defined"
 
-        system_prompt = """You are an expert AI film director planning shots for a PROFESSIONAL FILM with Hollywood-style editing.
+        # Build prior shots summary string
+        prior_shots_str = ""
+        if prior_shots_summary:
+            prior_shots_str = "\n\nPRIOR SHOTS IN THIS SCENE (for narrative context):\n" + "\n".join(prior_shots_summary)
 
-## CRITICAL UNDERSTANDING: This is a CUT, not a continuation
-Each shot in our shot list represents a DIFFERENT CAMERA ANGLE - like a Hollywood film edit.
-- The next shot is typically a CUT TO a new angle (close-up, wide, OTS, etc.)
-- It is NOT simply extending what was happening in the previous shot
-- Think of classic film editing: wide shot → cut to close-up → cut to reaction shot
-- The previous video's END STATE tells you WHERE characters are, but the NEXT SHOT shows them from a NEW ANGLE
+        system_prompt = """You are an expert AI film director writing prompts for AI image and video generation.
 
-## When to use prev_last_frame vs generate new:
-- use_prev_last_frame=TRUE: Only when the SAME camera angle continues (rare)
-- use_prev_last_frame=FALSE (DEFAULT): When cutting to a NEW angle (most cases)
-  - Generate a fresh start frame showing the NEW camera angle
-  - Characters should be in consistent positions/poses but viewed differently
+## CRITICAL: AI Models Have NO MEMORY
+The image generator and video generator are SEPARATE AI models with NO shared context.
+- They don't know character names
+- They don't remember previous shots
+- They ONLY see: your text prompt + reference images
 
-## CRITICAL: No Lip Movement / No Dialogue
-- ALL characters must have CLOSED MOUTHS or neutral expressions
-- NEVER describe characters speaking, talking, or mouthing words
-- Dialogue is added via lip-sync technology AFTER video generation
-- Even if the shot plan mentions dialogue, show characters LISTENING or REACTING, not speaking
+EVERY prompt you write must be COMPLETELY SELF-CONTAINED with full visual descriptions.
 
-## How to Write Prompts for Reference Images
-The AI will receive CHARACTER REFERENCE IMAGES. Your prompts MUST:
-1. Describe the character visually (not just their name)
-2. Reference their appearance from ref images
-3. Include their current costume/state for this scene
+## CRITICAL: Understanding Reference Images
+Reference images STRONGLY influence the output. The AI will try to recreate elements from them.
 
-GOOD: "A young man (Aubrey, as shown in reference images - pale, gaunt, dark curly hair) lies in bed..."
-BAD: "Aubrey lies in bed..."
+**PROBLEM**: If a reference image shows a character in a SPECIFIC LOCATION (by a window, in a bedroom),
+the AI will try to put them in that same location, FIGHTING against your prompt's positioning.
 
-Be extremely specific and visual. Describe a SINGLE FROZEN MOMENT for images."""
+**SOLUTION**: When writing prompts, be aware of what's in the reference images:
+- If the ref shows a character in a location, acknowledge it but OVERRIDE it in your prompt
+- Be EXTRA explicit about the NEW position: "NOW standing in the center of the room" (not near the window as in ref)
+- Describe the character's appearance and costume, then place them in the SHOT's location
 
-        user_content = f"""Watch this video clip carefully, especially the FINAL FRAMES.
-Note: This video is SHOT N. You are planning SHOT N+1, which is typically a CUT to a DIFFERENT ANGLE.
+**IDEAL REFERENCE IMAGES**: Show only the character's appearance/costume on a NEUTRAL background.
+If the user needs to generate new character reference images, suggest prompts like:
+"Full body portrait of [character description] wearing [costume], standing against a plain neutral gray studio background, soft even lighting, no background elements, costume reference photograph"
+
+## MOST IMPORTANT: EXACT SPATIAL POSITIONING
+The #1 goal is CONTINUITY. Watch the video carefully and note:
+- WHERE exactly is each character in frame? (left third, center, right side, foreground, background)
+- What direction are they facing? (toward camera, away, profile left/right, 3/4 view)
+- What are their body positions? (standing, sitting, leaning, distance from each other)
+- What are they next to? (door, window, furniture, other characters)
+- Scene geography: if someone was at the window, they should still be near the window
+
+Your prompts MUST specify exact positions like:
+"standing on the left side of frame, facing right toward the door"
+"seated in the foreground left, turned 3/4 toward camera"
+"in the background center, near the bookshelf"
+
+## How to Write Prompts
+
+BAD (model doesn't know who "John" is or where he should be):
+"John walks to the door"
+
+GOOD (full visual description WITH EXACT POSITION):
+"A tall man in his 30s with short brown hair, wearing a gray suit (matching the person in the reference images), positioned in the right third of frame near a wooden door. He faces the door with his back partially to camera. His expression is neutral, mouth closed."
+
+For EVERY character mentioned, include:
+- Age/build description
+- Hair color/style
+- Current clothing/costume
+- EXACT POSITION in frame (left/center/right, foreground/background)
+- FACING DIRECTION (toward camera, away, profile, etc.)
+- "(matching the appearance in reference images)" - focus on APPEARANCE, not location
+- Current expression (mouth closed - no speaking)
+
+## Shot Types (This is a CUT, not a continuation)
+- The previous video shows where characters ARE
+- Your prompts describe a NEW CAMERA ANGLE viewing the same moment
+- Think: wide shot → cut to close-up → cut to reaction shot
+- CHARACTERS STAY IN THE SAME RELATIVE POSITIONS even when camera angle changes
+
+## No Lip Movement
+- ALL characters must have CLOSED MOUTHS
+- Never describe speaking or talking
+- Dialogue is added via lip-sync AFTER video generation
+- Characters can react, gesture, move - but mouths stay closed
+
+## Image vs Video Prompts
+- IMAGE PROMPT: Describe a single frozen moment - composition, lighting, character positions WITH EXACT PLACEMENT
+- VIDEO PROMPT: Describe the motion/action - but still include full character descriptions AND their starting positions!"""
+
+        # Build context about videos being provided
+        video_context_note = ""
+        if additional_videos_data:
+            video_context_note = f"\nIMPORTANT: You have been provided {len(additional_videos_data)} earlier shot video(s) for additional narrative context, followed by the immediately previous shot (Shot N). Watch all videos to understand the scene's flow."
+
+        user_content = f"""Watch the video clip(s) carefully, analyzing them frame by frame.
+Note: The LAST video shown is SHOT N. You are planning SHOT N+1, which is typically a CUT to a DIFFERENT ANGLE.{video_context_note}
 
 SCENE CONTEXT:
 {scene_context}
@@ -202,6 +331,7 @@ VISUAL STYLE:
 
 AVAILABLE CHARACTERS:
 {characters_str}
+{prior_shots_str}
 
 PLANNED NEXT SHOT (Shot N+1):
 - Camera Angle: {next_shot_info.get('camera_angle', 'Not specified')}
@@ -215,29 +345,79 @@ Remember: Shot N+1 is a CUT to "{next_shot_info.get('camera_angle', 'new angle')
 
 Return a JSON object with these exact fields:
 {{
-  "video_end_state": "Detailed description of final frames - WHERE are characters positioned? What are they doing? What's the lighting?",
+  "video_end_state": "Detailed description of final frames - WHERE EXACTLY are characters positioned (left/center/right, foreground/background)? What direction are they facing? What are they next to? What's the lighting?",
+
+  "character_positions": [
+    {{"name": "Character Name", "position": "left third of frame, foreground", "facing": "toward the door on the right", "near": "standing beside the wooden table"}}
+  ],
 
   "characters_in_shot": ["Array of character names that should appear in Shot N+1"],
 
-  "use_prev_last_frame": false (Usually false - we're cutting to a new angle. Only true if same angle continues),
+  "use_prev_last_frame": false,
 
-  "image_prompt": "Complete prompt for the START FRAME of Shot N+1. This is a NEW CAMERA ANGLE showing the scene. Describe: the camera angle, the setting, each character's full appearance (for ref image matching), their pose (CLOSED MOUTH - no speaking), wardrobe, lighting. Example: 'Close-up of a young woman (as shown in reference images - auburn hair, fair complexion) sitting by a bed, her face showing concern, mouth closed in a neutral expression, soft window light from the left, photorealistic, 35mm film'",
+  "image_prompt": "COMPLETE standalone prompt. MUST include for EACH character: (1) full appearance description, (2) EXACT position in frame (left/center/right, foreground/background), (3) facing direction, (4) what they're near, (5) '(as shown in reference images)'. Example: 'Medium shot of a Victorian bedroom. On the left side of frame, a young woman in her 20s with auburn wavy hair, fair complexion, wearing a cream-colored Victorian nightgown (as shown in reference images), sits in a wooden chair facing right toward the bed. In the center-right of frame, a pale young man lies in the ornate bed, facing toward her. Soft golden morning light streams through a window on the left. Photorealistic, 35mm film, cinematic lighting.'",
 
-  "video_prompt": "What motion/action happens in this shot. Remember: NO lip movement or speaking - characters react, move, gesture but mouths stay closed",
+  "video_prompt": "COMPLETE standalone prompt. MUST REPEAT full character descriptions WITH POSITIONS - the video model has NO memory! Include starting positions and movement. Example: 'In a Victorian bedroom, on the left side of frame a young woman in her 20s with auburn hair, cream nightgown (as shown in reference images), sits in a chair. She slowly leans forward and reaches her right hand toward a pale young man lying in the bed on the right side of frame. Her expression shifts from concern to hope, mouth remaining closed. Soft morning light. Cinematic, smooth motion.'",
 
-  "continuity_notes": "What MUST match between shots: character positions, wardrobe, lighting direction, time of day, background elements",
+  "continuity_notes": "What MUST match: exact character positions (who is where in frame), facing directions, wardrobe, lighting direction, time of day, scene geography",
 
   "reasoning": "Brief explanation - what type of cut is this? Why this angle?"
-}}"""
+}}
+
+CRITICAL REMINDERS:
+1. image_prompt and video_prompt go to DIFFERENT AI models with NO shared memory
+2. BOTH prompts must include: appearance + EXACT POSITION + facing direction + nearby objects
+3. Never use just a character name - always describe their appearance AND where they are
+4. Include "(as shown in reference images)" for each character
+5. POSITIONS ARE CRITICAL: if someone was "on the left side near the window" they must still be "on the left side near the window" """
+
+        # Build parts array: context videos first (oldest to newest), then character reference images, then text prompt
+        parts = []
+
+        # Add additional context videos first (earlier shots for narrative context)
+        if additional_videos_data:
+            for i, vid_info in enumerate(additional_videos_data):
+                parts.append({"text": f"\n--- EARLIER SHOT VIDEO #{i+1} (for narrative context) ---"})
+                parts.append({"inlineData": {"mimeType": vid_info["mime"], "data": vid_info["data"]}})
+
+        # Add the primary video (immediately previous shot - this is what Shot N+1 follows)
+        parts.append({"text": "\n--- IMMEDIATELY PREVIOUS SHOT (Shot N) - Your new shot follows this ---"})
+        parts.append({"inlineData": {"mimeType": mime_type, "data": video_data}})
+
+        # Add character reference images with labels
+        print(f"\n--- CHARACTER REFERENCE IMAGES ---")
+        if not character_ref_images:
+            print("  No character reference images provided")
+        ref_image_count = 0
+        for char_name, image_paths in character_ref_images.items():
+            print(f"\n  Character: {char_name}")
+            for i, img_path in enumerate(image_paths):
+                print(f"    Ref #{i+1}: {img_path}")
+                print(f"      Exists: {os.path.exists(img_path)}")
+                try:
+                    if os.path.exists(img_path):
+                        file_size = os.path.getsize(img_path)
+                        print(f"      File size: {file_size} bytes ({file_size // 1024} KB)")
+                    img_mime = mimetypes.guess_type(img_path)[0] or "image/jpeg"
+                    with open(img_path, "rb") as f:
+                        img_data = base64.b64encode(f.read()).decode()
+                    print(f"      Base64 size: {len(img_data)} chars (~{len(img_data) * 3 // 4 // 1024} KB)")
+                    print(f"      Status: ✓ LOADED")
+                    # Add label text before image
+                    parts.append({"text": f"\n--- REFERENCE IMAGE for {char_name} (#{i+1}) ---"})
+                    parts.append({"inlineData": {"mimeType": img_mime, "data": img_data}})
+                    ref_image_count += 1
+                except Exception as e:
+                    print(f"      Status: ✗ FAILED - {e}")
+
+        # Add the main text prompt at the end
+        parts.append({"text": user_content})
 
         body = {
             "contents": [
                 {
                     "role": "user",
-                    "parts": [
-                        {"inlineData": {"mimeType": mime_type, "data": video_data}},
-                        {"text": user_content}
-                    ]
+                    "parts": parts
                 }
             ],
             "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -247,8 +427,51 @@ Return a JSON object with these exact fields:
             }
         }
 
-        print(f"[GEMINI DIRECTOR] Analyzing video: {video_path}")
-        print(f"[GEMINI DIRECTOR] Video size: {len(video_data)} base64 chars (~{len(video_data) * 3 // 4 // 1024} KB)")
+        total_videos = 1 + len(additional_videos_data)
+        total_video_kb = (len(video_data) * 3 // 4 // 1024) + sum(len(v["data"]) * 3 // 4 // 1024 for v in additional_videos_data)
+
+        print("\n" + "=" * 70)
+        print("[GEMINI DIRECTOR] SUMMARY - SENDING TO GEMINI API")
+        print("=" * 70)
+        print(f"  Total videos: {total_videos}")
+        print(f"    - Primary video: {video_path}")
+        for v in additional_videos_data:
+            print(f"    - Context video: {v['path']}")
+        print(f"  Total video data: ~{total_video_kb} KB")
+        print(f"  Character reference images: {ref_image_count}")
+        for char_name, paths in character_ref_images.items():
+            print(f"    - {char_name}: {len(paths)} image(s)")
+        print(f"  API URL: {url}")
+        print("=" * 70)
+        print(f"[GEMINI DIRECTOR] Total video size: ~{total_video_kb} KB")
+
+        # DUMP THE EXACT REQUEST STRUCTURE TO FILE (without base64 data)
+        debug_body = {
+            "contents": [{
+                "role": "user",
+                "parts": []
+            }],
+            "systemInstruction": body["systemInstruction"],
+            "generationConfig": body["generationConfig"]
+        }
+        for part in parts:
+            if "text" in part:
+                debug_body["contents"][0]["parts"].append({"text": part["text"][:500] + "..." if len(part.get("text", "")) > 500 else part["text"]})
+            elif "inlineData" in part:
+                data_size = len(part["inlineData"]["data"])
+                debug_body["contents"][0]["parts"].append({
+                    "inlineData": {
+                        "mimeType": part["inlineData"]["mimeType"],
+                        "data": f"<BASE64 DATA: {data_size} chars, ~{data_size * 3 // 4 // 1024} KB>"
+                    }
+                })
+
+        import json as json_mod
+        debug_file = "/tmp/gemini_request_debug.json"
+        with open(debug_file, "w") as f:
+            json_mod.dump(debug_body, f, indent=2)
+        print(f"\n[GEMINI DIRECTOR] FULL REQUEST DUMPED TO: {debug_file}")
+        print(f"[GEMINI DIRECTOR] Run: cat {debug_file}")
 
         r = requests.post(url, headers=self._headers(), json=body, timeout=180)
         try:
@@ -278,7 +501,7 @@ Return a JSON object with these exact fields:
                 "status": "ok",
                 "video_end_state": result.get("video_end_state", ""),
                 "characters_in_shot": result.get("characters_in_shot", []),
-                "use_prev_last_frame": result.get("use_prev_last_frame", True),
+                "use_prev_last_frame": result.get("use_prev_last_frame", False),
                 "image_prompt": result.get("image_prompt", ""),
                 "video_prompt": result.get("video_prompt", ""),
                 "continuity_notes": result.get("continuity_notes", ""),

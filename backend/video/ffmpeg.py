@@ -94,6 +94,61 @@ def extract_first_last_frames(video_path: str, out_first: str, out_last: str) ->
     return str(first), str(last)
 
 
+def extract_frame_at_timestamp(video_path: str, timestamp_seconds: float, output_path: str) -> str:
+    """
+    Extract a single frame from a video at a specific timestamp.
+
+    Args:
+        video_path: Path to the video file
+        timestamp_seconds: Time in seconds (can be decimal like 2.5)
+        output_path: Path where frame will be saved (should end in .png or .jpg)
+
+    Returns:
+        Path to the extracted frame
+
+    Raises:
+        FileNotFoundError: If video file doesn't exist
+        RuntimeError: If extraction fails
+    """
+    video = Path(video_path)
+    output = Path(output_path)
+
+    if not video.exists():
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    # Ensure output directory exists
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    # Clamp timestamp to valid range
+    duration = get_video_duration(str(video))
+    if duration > 0:
+        timestamp_seconds = max(0, min(timestamp_seconds, duration - 0.05))
+    else:
+        timestamp_seconds = max(0, timestamp_seconds)
+
+    try:
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-ss", str(timestamp_seconds),
+            "-i", str(video),
+            "-vframes", "1",
+            "-q:v", "2",  # High quality
+            str(output)
+        ], capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
+
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg error extracting frame: {result.stderr}")
+
+        if not output.exists():
+            raise RuntimeError(f"Frame extraction failed - output not created")
+
+        print(f"[FFMPEG] Extracted frame at {timestamp_seconds}s -> {output}")
+        return str(output)
+
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Timeout extracting frame at {timestamp_seconds}s from {video_path}")
+
+
 def get_video_duration(video_path: str) -> float:
     """
     Get the duration of a video file in seconds.
