@@ -50,6 +50,16 @@ Instead of Long Context Tuning, we utilize a fundamentally different architectur
 
 ---
 
+## Demo: State Injection in Practice
+
+**24 shots | 01:54 runtime | Zero identity drift**
+
+https://github.com/skolmuirgheasa/openfilmai/raw/main/readme-media/demo_consistency_workflow.mp4
+
+*Generated as a graph of discrete shots with inherited state—not a single long-context prompt. Character identity remains stable across lighting setups, camera angles, and scene transitions.*
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -359,6 +369,40 @@ For each shot:
 
 ---
 
+## Platform Walkthrough
+
+### 1. Scene State Configuration
+
+Before generation begins, the **Scene Object** is defined. This locks the lighting, color palette, and atmospheric variables. All subsequent shots inherit this state, preventing the "random lighting" drift common in standard prompting.
+
+![Scene Setup: Locking the visual state](readme-media/ai-assisted-scene-planning.png)
+
+### 2. Hierarchical Character Casting
+
+The core architectural breakthrough: define a **Global Identity** (face/appearance), then map it to a **Scene Appearance** (wardrobe/styling). The system automatically injects the correct combination into every prompt.
+
+![Character Mapping: Global to Scene Inheritance](readme-media/scene-level-casting-and-character-adaptation.png)
+
+### 3. Agentic Shot Planning
+
+The **AI Cinematographer** (Claude or GPT-4) parses scene descriptions and generates coverage plans based on film theory—Wide, Over-the-Shoulder, Close-up—not just text summaries.
+
+![Shot Planning: Script to Directed List](readme-media/ai-script-to-shot-planning.png)
+
+### 4. Context-Aware Continuity
+
+When generating Shot N, the system uses **Gemini 2.0 Flash** to analyze the video of Shot N-1. It extracts character positioning and lighting vectors to ensure the new shot matches the previous cut.
+
+![Gemini Analysis: Video-Aware Continuity](readme-media/adaptive-context-based-shot-continuity.png)
+
+### 5. Timeline Management
+
+The interface functions as a Non-Linear Editor (NLE). Each card represents a node in the state graph, holding its own prompt, audio, and video assets.
+
+![Timeline: Managing the Shot Graph](readme-media/timeline-shot-organization.png)
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -371,7 +415,7 @@ For each shot:
 
 ```bash
 # Clone
-git clone https://github.com/your-org/openfilmai.git
+git clone https://github.com/skolmuirgheasa/openfilmai.git
 cd openfilmai
 
 # Frontend dependencies
@@ -472,6 +516,25 @@ export GOOGLE_CLOUD_PROJECT="your-project-id"
 export VERTEX_LOCATION="us-central1"
 export VERTEX_TEMP_BUCKET="your-gcs-bucket"
 ```
+
+---
+
+## Stack & Integrations
+
+OpenFilm AI is model-agnostic—it orchestrates best-in-class tools for each modality:
+
+| Modality | Provider | Purpose |
+|----------|----------|---------|
+| **Video Generation** | [Google Vertex AI](https://cloud.google.com/vertex-ai) (Veo 3.1) | State-of-the-art video synthesis |
+| | [Replicate](https://replicate.com) (Kling, Seedance, Haiper) | Alternative video models |
+| **Image Generation** | [Replicate](https://replicate.com) (NanoBanana, Seedream, Flux) | Multi-reference image synthesis |
+| **Orchestration** | [Anthropic](https://anthropic.com) (Claude) | Shot planning, scene analysis |
+| | [OpenAI](https://openai.com) (GPT-4) | Alternative LLM orchestration |
+| **Vision Analysis** | [Google Gemini](https://deepmind.google/technologies/gemini/) 2.0 Flash | AI Director—video continuity analysis |
+| **Voice/TTS** | [ElevenLabs](https://elevenlabs.io) | Character voices, voice cloning |
+| **Lip-Sync** | [WaveSpeed AI](https://wavespeed.ai) (InfiniteTalk) | Audio-driven facial animation |
+
+*API keys for these services are configured in the Settings panel. The architecture is designed to easily add new providers.*
 
 ---
 
