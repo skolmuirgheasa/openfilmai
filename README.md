@@ -14,23 +14,25 @@
 
 ---
 
-![OpenFilm AI Generated Footage](readme-media/hero_filmstrip.png)
+![OpenFilm Interface](readme-media/timeline-shot-organization.png)
 
-> **24 shots. Zero identity drift.** Wide, medium, close-up—all AI-generated with consistent characters across lighting setups and camera angles.
+> **The Shot Graph:** A node-based editor where every shot inherits state (lighting, wardrobe, style) from the scene container.
 
 ---
 
 ## Demo
 
-https://github.com/skolmuirgheasa/openfilmai/raw/main/readme-media/demo_consistency_workflow.mp4
+https://github.com/user-attachments/assets/1c4e91a2-8a67-4a15-8a1b-7e3e9f7c5d2a
 
-*Generated as a graph of discrete shots with inherited state—not a single long-context prompt. Character identity remains stable across lighting setups, camera angles, and scene transitions.*
+**24 shots | 01:54 runtime | Zero identity drift**
+
+*Generated as a graph of discrete shots—not a single long-context prompt. Character identity remains stable across lighting setups, camera angles, and scene transitions.*
 
 ---
 
 ## The Problem OpenFilm Solves
 
-The generative video industry (Google Veo, OpenAI Sora, Runway) optimizes for **Long Context Tuning (LCT)**—expanding context windows to generate 60+ seconds in a single pass. This approach has fundamental problems:
+The generative video industry optimizes for **Long Context Tuning (LCT)**—expanding context windows to generate 60+ seconds in a single pass. This approach has fundamental problems:
 
 | Issue | Description |
 |-------|-------------|
@@ -73,21 +75,15 @@ Define **Global Identity** (face), map to **Scene Appearance** (wardrobe). The s
 
 ### Agentic Shot Planning
 
-The AI Cinematographer (Claude or GPT-4) generates coverage plans based on film theory—Wide, Over-the-Shoulder, Close-up.
+The AI Cinematographer generates coverage plans based on film theory—Wide, Over-the-Shoulder, Close-up.
 
 ![Shot Planning](readme-media/ai-script-to-shot-planning.png)
 
 ### Context-Aware Continuity
 
-Gemini 2.0 Flash analyzes the previous shot's video to extract character positions and lighting for the next shot.
+The AI Director analyzes the previous shot's video to extract character positions and lighting for the next shot.
 
 ![Continuity Analysis](readme-media/adaptive-context-based-shot-continuity.png)
-
-### Timeline Management
-
-The interface functions as a node-based editor. Each shot card holds its prompt, audio, and video assets.
-
-![Timeline Interface](readme-media/timeline-shot-organization.png)
 
 ---
 
@@ -97,7 +93,7 @@ The interface functions as a node-based editor. Each shot card holds its prompt,
 graph TD
     subgraph "Global State"
         A[Cast Registry] -->|Character Identity| B
-        A -->|Voice Profiles| V[ElevenLabs TTS]
+        A -->|Voice Profiles| V[TTS Engine]
     end
 
     subgraph "Scene State"
@@ -108,7 +104,7 @@ graph TD
     end
 
     subgraph "Agentic Orchestration"
-        C{AI Director} -->|Gemini Video Analysis| D
+        C{AI Director} -->|Video Analysis| D
         D[Shot Planner] -->|Shot 1| E
         D -->|Shot 2| E
         D -->|Shot N| E
@@ -118,7 +114,7 @@ graph TD
         E[Context Injection] -->|Refs + Prompts| F[Image Gen]
         F -->|Start Frame| G[Video Gen]
         G -->|End Frame| E
-        V -->|Audio| L[Lip-Sync]
+        V -->|Audio| L[Audio-Driven Animation]
         F -->|Face Image| L
     end
 ```
@@ -178,15 +174,15 @@ npm run dev
 
 ### API Keys Required
 
-Configure in Settings (gear icon):
+Configure in Settings:
 
 | Service | Purpose | Required |
 |---------|---------|----------|
-| **Replicate** | Image/video generation (NanoBanana, Kling, Seedance) | Yes |
+| **Replicate** | Image/video generation | Yes |
 | **Anthropic** or **OpenAI** | Shot planning, scene analysis | Yes |
 | **ElevenLabs** | Text-to-speech, voice cloning | For audio |
-| **WaveSpeed** | Lip-sync animation | For talking heads |
-| **Google Vertex AI** | Veo 3.1, Gemini 2.0 Flash | For AI Director |
+| **WaveSpeed** | Audio-driven animation | For dialogue |
+| **Google Cloud** | Veo, Gemini | For AI Director |
 
 ---
 
@@ -194,14 +190,12 @@ Configure in Settings (gear icon):
 
 | Modality | Provider | Purpose |
 |----------|----------|---------|
-| **Video Generation** | [Google Vertex AI](https://cloud.google.com/vertex-ai) (Veo 3.1) | Video synthesis |
-| | [Replicate](https://replicate.com) (Kling, Seedance) | Alternative video models |
-| **Image Generation** | [Replicate](https://replicate.com) (NanoBanana, Seedream, Flux) | Multi-reference image synthesis (up to 14 refs) |
-| **Orchestration** | [Anthropic](https://anthropic.com) (Claude) | Shot planning, scene analysis |
-| | [OpenAI](https://openai.com) (GPT-4) | Alternative LLM orchestration |
-| **Vision Analysis** | [Google Gemini](https://deepmind.google/technologies/gemini/) 2.0 Flash | AI Director—video continuity analysis |
-| **Voice/TTS** | [ElevenLabs](https://elevenlabs.io) | Character voices, voice cloning |
-| **Lip-Sync** | [WaveSpeed AI](https://wavespeed.ai) (InfiniteTalk) | Audio-driven facial animation |
+| **Video Generation** | [Google Vertex AI](https://cloud.google.com/vertex-ai), [Replicate](https://replicate.com) | Video synthesis |
+| **Image Generation** | [Replicate](https://replicate.com) | Multi-reference image synthesis |
+| **Orchestration** | [Anthropic](https://anthropic.com), [OpenAI](https://openai.com) | Shot planning, scene analysis |
+| **Vision Analysis** | [Google Gemini](https://deepmind.google/technologies/gemini/) | AI Director—video continuity |
+| **Voice/TTS** | [ElevenLabs](https://elevenlabs.io) | Character voices |
+| **Animation** | [WaveSpeed AI](https://wavespeed.ai) | Audio-driven facial animation |
 
 ---
 
@@ -224,7 +218,7 @@ interface ShotState {
 
   // Character-level identity (fallback hierarchy)
   global_character_refs: string[];   // Identity baseline
-  voice_id: string;                  // ElevenLabs voice profile
+  voice_id: string;                  // Voice profile
 }
 ```
 
@@ -232,7 +226,7 @@ interface ShotState {
 
 ```mermaid
 graph LR
-    A[Previous Shot Video] -->|Gemini Analysis| B[Character Positions]
+    A[Previous Shot Video] -->|Vision Analysis| B[Character Positions]
     A -->|Frame-by-Frame| C[Scene Geography]
     B --> D[Next Shot Plan]
     C --> D
@@ -240,16 +234,16 @@ graph LR
     D -->|Video Prompt| F[Motion Continuity]
 ```
 
-Send multiple prior shots to Gemini for narrative understanding—the AI sees visual flow, not just text.
+Send multiple prior shots for narrative understanding—the AI sees visual flow, not just text.
 
 ### Audio-Driven Animation
 
 ```
-Text ──► ElevenLabs TTS ──► Audio Track
-                               │
-Character Ref Image ───────────┼──► WaveSpeed Lip-Sync ──► Talking Video
-                               │
-Scene Context ─────────────────┘
+Text ──► TTS ──► Audio Track
+                     │
+Character Image ─────┼──► WaveSpeed ──► Animated Video
+                     │
+Scene Context ───────┘
 ```
 
 ---
@@ -312,16 +306,16 @@ openfilmai/
 ├── frontend/                    # React + TypeScript UI
 │   └── src/App.tsx             # Main application
 ├── backend/
-│   ├── main.py                 # FastAPI server, all endpoints
+│   ├── main.py                 # FastAPI server
 │   ├── ai/
-│   │   ├── cinematographer.py  # Shot planning prompts
-│   │   ├── vertex_client.py    # Veo 3.1 + Gemini AI Director
-│   │   └── replicate_client.py # NanoBanana, Kling, Seedance
+│   │   ├── cinematographer.py  # Shot planning
+│   │   ├── vertex_client.py    # Google AI integration
+│   │   └── replicate_client.py # Replicate integration
 │   ├── video/
-│   │   └── ffmpeg.py           # Frame extraction, optical flow
+│   │   └── ffmpeg.py           # Frame extraction
 │   └── storage/
 │       └── files.py            # Metadata persistence
-├── project_data/               # User projects (created at runtime)
+├── project_data/               # User projects (runtime)
 ├── electron.js                 # Desktop shell
 └── requirements.txt
 ```
@@ -332,17 +326,16 @@ openfilmai/
 
 ```bash
 # API Keys (or configure in Settings UI)
-export REPLICATE_API_TOKEN="r8_..."
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
+export REPLICATE_API_TOKEN="..."
+export ANTHROPIC_API_KEY="..."
+export OPENAI_API_KEY="..."
 export ELEVENLABS_API_KEY="..."
 export WAVESPEED_API_KEY="..."
 
-# Google Cloud (for Vertex AI / Veo 3.1)
+# Google Cloud (for Vertex AI)
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 export VERTEX_LOCATION="us-central1"
-export VERTEX_TEMP_BUCKET="your-gcs-bucket"
 ```
 
 ---
