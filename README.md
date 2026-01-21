@@ -4,7 +4,7 @@
 
 ### Agentic Shot Orchestration for AI Filmmaking
 
-*A state-management engine for video generation that treats film production as a graph of inherited context, not a single prompt.*
+A state-management engine for video generation. Treats film production as a graph of inherited context rather than a single continuous prompt.
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![React 18](https://img.shields.io/badge/react-18-61dafb.svg)](https://reactjs.org/)
@@ -22,42 +22,46 @@
 
 ## Demo
 
-
-https://github.com/user-attachments/assets/e5fe4140-4180-4440-a33c-5031f991e967
-
+<p align="center">
+<video src="https://github.com/user-attachments/assets/e5fe4140-4180-4440-a33c-5031f991e967" width="560" controls></video>
+</p>
 
 **12 shots | 01:54 runtime | Consistent characters, setting, voices**
 
-*Generated as a graph of discrete shots—not a single long-context prompt. Character identity remains stable across lighting setups, camera angles, and scene transitions.*
+Generated as a graph of discrete shots with inherited state. Character identity remains stable across lighting setups, camera angles, and scene transitions.
 
 ---
 
-## The Problem OpenFilmAI Solves
+## The Problem
 
-The generative video industry optimizes for **Long Context Tuning (LCT)**—expanding context windows to generate 60+ seconds in a single pass. This approach has fundamental problems:
+Current video generation models (Veo, Sora, Runway) optimize for Long Context Tuning. They expand context windows to generate longer clips in a single inference pass. Veo 3 generates 8-second clips. Sora 2 generates 20-25 seconds. Neither offers native long-form generation without multi-clip workarounds.
+
+**Technical constraints of this approach:**
 
 | Issue | Description |
 |-------|-------------|
-| **Latent Drift** | Character faces "melt" as the latent representation degrades over time |
-| **Editorial Rigidity** | Can't edit pacing without regenerating the entire sequence |
-| **Compute Inefficiency** | Exponentially more resources for longer sequences |
+| **Latent Drift** | Character identity features degrade as the latent representation expands over time |
+| **Editorial Rigidity** | Pacing edits require regenerating the full context window |
+| **Compute Inefficiency** | Generating a 2-minute scene as a single context requires exponentially more compute than chaining twenty 6-second clips |
 
 ### The OpenFilm Solution: Hierarchical State Injection
 
-| LCT Approach | OpenFilm Approach |
-|--------------|-------------------|
-| Expand context window | Inject state per-shot |
-| Fight latent drift | Eliminate it structurally |
-| Generate entire scenes | Generate optimal 4-8s clips |
+This architecture replaces long-context generation with graph-based state management.
+
+| Long Context Approach | OpenFilm Approach |
+|----------------------|-------------------|
+| Single context window | Graph of discrete nodes |
+| Temporal attention | State inheritance |
+| One-shot generation | Recursive generation |
 | Pixels remember pixels | State objects remember state |
 
-**How it works:**
+**Mechanism:**
 
-1. **State Management** — The "Scene" is a state object holding immutable variables (lighting, character refs, visual style)
-2. **Short-Shot Inference** — Generate 4-8s clips where diffusion models perform best
-3. **Inheritance** — Each shot inherits the *State* of the scene, not just the pixels of the previous frame
+1. **State Management:** The Scene object holds immutable variables (lighting, character refs, visual style)
+2. **Short-Shot Inference:** Generate 4-8s clips where diffusion models perform best
+3. **Inheritance:** New shots inherit the state of the scene and the end-frame of the previous shot
 
-**Result**: Infinite runtime with zero identity drift.
+**Result:** Infinite total runtime with zero identity drift.
 
 ---
 
@@ -65,25 +69,25 @@ The generative video industry optimizes for **Long Context Tuning (LCT)**—expa
 
 ### Scene State Configuration
 
-Lock lighting, color palette, and atmosphere before generation. All shots inherit this state.
+Users define lighting, color palette, and atmosphere variables before generation. All shot nodes inherit this state object.
 
 ![Scene Setup](readme-media/ai-assisted-scene-planning.png)
 
 ### Hierarchical Character Casting
 
-Define **Global Identity** (face), map to **Scene Appearance** (wardrobe). The system injects the correct combination into every prompt.
+The system maps Global Identity (face) to Scene Appearance (wardrobe). It injects the specific reference combination into every prompt.
 
 ![Character Mapping](readme-media/scene-level-casting-and-character-adaptation.png)
 
 ### Agentic Shot Planning
 
-The AI Cinematographer generates coverage plans based on film theory—Wide, Over-the-Shoulder, Close-up.
+The AI Director parses screenplay text and generates a coverage plan (Wide, OTS, Close-up) based on standard cinematic theory.
 
 ![Shot Planning](readme-media/ai-script-to-shot-planning.png)
 
 ### Context-Aware Continuity
 
-The AI Director analyzes the previous shot's video to extract character positions and lighting for the next shot.
+The system analyzes the video file of Shot N-1, calculates character positioning and lighting vectors, and enforces continuity in Shot N.
 
 ![Continuity Analysis](readme-media/adaptive-context-based-shot-continuity.png)
 
@@ -143,7 +147,7 @@ Shot 1 (Wide)     Shot 2 (Medium)    Shot 3 (Close-up)
          Continuity         Continuity
 ```
 
-The **last frame of Shot N becomes the start frame for Shot N+1**, creating seamless visual continuity.
+The last frame of Shot N becomes the start frame for Shot N+1. This creates seamless visual continuity.
 
 ---
 
@@ -158,19 +162,15 @@ The **last frame of Shot N becomes the start frame for Shot N+1**, creating seam
 ### Installation
 
 ```bash
-# Clone
 git clone https://github.com/skolmuirgheasa/openfilmai.git
 cd openfilmai
 
-# Frontend dependencies
 npm install
 
-# Python environment
 python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Run (starts backend + frontend + Electron)
 npm run dev
 ```
 
@@ -195,7 +195,7 @@ Configure in Settings:
 | **Video Generation** | [Google Vertex AI](https://cloud.google.com/vertex-ai), [Replicate](https://replicate.com) | Video synthesis |
 | **Image Generation** | [Replicate](https://replicate.com) | Multi-reference image synthesis |
 | **Orchestration** | [Anthropic](https://anthropic.com), [OpenAI](https://openai.com) | Shot planning, scene analysis |
-| **Vision Analysis** | [Google Gemini](https://deepmind.google/technologies/gemini/) | AI Director—video continuity |
+| **Vision Analysis** | [Google Gemini](https://deepmind.google/technologies/gemini/) | Video continuity analysis |
 | **Voice/TTS** | [ElevenLabs](https://elevenlabs.io) | Character voices |
 | **Animation** | [WaveSpeed AI](https://wavespeed.ai) | Audio-driven facial animation |
 
@@ -236,7 +236,7 @@ graph LR
     D -->|Video Prompt| F[Motion Continuity]
 ```
 
-Send multiple prior shots for narrative understanding—the AI sees visual flow, not just text.
+The system sends multiple prior shots for narrative understanding. The AI sees visual flow, not just text.
 
 ### Audio-Driven Animation
 
@@ -327,7 +327,6 @@ openfilmai/
 ## Environment Variables
 
 ```bash
-# API Keys (or configure in Settings UI)
 export REPLICATE_API_TOKEN="..."
 export ANTHROPIC_API_KEY="..."
 export OPENAI_API_KEY="..."
@@ -344,10 +343,10 @@ export VERTEX_LOCATION="us-central1"
 
 ## Roadmap
 
-- [ ] Batch generation — Queue multiple shots for overnight rendering
-- [ ] Version control — Track shot iterations, revert to previous takes
-- [ ] Multi-scene projects — Scene graph with cross-scene character consistency
-- [ ] Export presets — Direct export to Premiere XML, DaVinci
+- [ ] Batch generation: Queue multiple shots for overnight rendering
+- [ ] Version control: Track shot iterations, revert to previous takes
+- [ ] Multi-scene projects: Scene graph with cross-scene character consistency
+- [ ] Export presets: Direct export to Premiere XML, DaVinci
 
 ---
 
@@ -369,6 +368,6 @@ MIT
 
 <div align="center">
 
-**OpenFilm AI** — State injection for AI filmmaking. Zero drift. Infinite runtime.
+**OpenFilm AI**: State injection for AI filmmaking. Zero drift. Infinite runtime.
 
 </div>
