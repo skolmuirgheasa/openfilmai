@@ -14,13 +14,13 @@
 
 ---
 
-[![OpenFilm Interface](readme-media/timeline-shot-organization.png)](readme-media/timeline-shot-organization.png)
+![OpenFilm AI Generated Footage](readme-media/hero_filmstrip.png)
 
-> **The Shot Graph:** A node-based editor where every shot inherits state (lighting, wardrobe, style) from the scene container.
+> **24 shots. Zero identity drift.** Wide, medium, close-up—all AI-generated with consistent characters across lighting setups and camera angles.
 
 ---
 
-## Output: 24 Shots, Zero Drift
+## Demo
 
 https://github.com/skolmuirgheasa/openfilmai/raw/main/readme-media/demo_consistency_workflow.mp4
 
@@ -82,6 +82,12 @@ The AI Cinematographer (Claude or GPT-4) generates coverage plans based on film 
 Gemini 2.0 Flash analyzes the previous shot's video to extract character positions and lighting for the next shot.
 
 ![Continuity Analysis](readme-media/adaptive-context-based-shot-continuity.png)
+
+### Timeline Management
+
+The interface functions as a node-based editor. Each shot card holds its prompt, audio, and video assets.
+
+![Timeline Interface](readme-media/timeline-shot-organization.png)
 
 ---
 
