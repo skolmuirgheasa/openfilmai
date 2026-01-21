@@ -24,6 +24,7 @@
 
 https://github.com/user-attachments/assets/1c4e91a2-8a67-4a15-8a1b-7e3e9f7c5d2a
 
+
 **24 shots | 01:54 runtime | Zero identity drift**
 
 *Generated as a graph of discrete shots—not a single long-context prompt. Character identity remains stable across lighting setups, camera angles, and scene transitions.*
