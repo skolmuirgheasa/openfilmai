@@ -22,16 +22,17 @@
 
 ## Demo
 
-https://github.com/user-attachments/assets/1c4e91a2-8a67-4a15-8a1b-7e3e9f7c5d2a
+
+https://github.com/user-attachments/assets/e5fe4140-4180-4440-a33c-5031f991e967
 
 
-**24 shots | 01:54 runtime | Zero identity drift**
+**12 shots | 01:54 runtime | Consistent characters, setting, voices**
 
 *Generated as a graph of discrete shots—not a single long-context prompt. Character identity remains stable across lighting setups, camera angles, and scene transitions.*
 
 ---
 
-## The Problem OpenFilm Solves
+## The Problem OpenFilmAI Solves
 
 The generative video industry optimizes for **Long Context Tuning (LCT)**—expanding context windows to generate 60+ seconds in a single pass. This approach has fundamental problems:
 
