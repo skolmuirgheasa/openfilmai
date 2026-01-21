@@ -14,27 +14,31 @@ A state-management engine for video generation. Treats film production as a grap
 
 ---
 
-![OpenFilm Interface](readme-media/timeline-shot-organization.png)
+<p align="center">
+<img src="readme-media/ai-assisted-scene-planning.png" alt="Scene Setup" width="32%">
+<img src="readme-media/scene-level-casting-and-character-adaptation.png" alt="Character Casting" width="32%">
+<img src="readme-media/timeline-shot-organization.png" alt="Timeline" width="32%">
+</p>
 
-> **The Shot Graph:** A node-based editor where every shot inherits state (lighting, wardrobe, style) from the scene container.
+**Scene setup** | **Character casting** | **Shot timeline**
+
+Define visual state, map characters to appearances, manage the shot graph.
 
 ---
 
 ## Demo
 
-<p align="center">
-<video src="https://github.com/user-attachments/assets/e5fe4140-4180-4440-a33c-5031f991e967" width="560" controls></video>
-</p>
+<a href="https://github.com/user-attachments/assets/e5fe4140-4180-4440-a33c-5031f991e967">
+<img src="readme-media/hero_filmstrip.png" alt="Watch Demo" width="400">
+</a>
 
-**12 shots | 01:54 runtime | Consistent characters, setting, voices**
-
-Generated as a graph of discrete shots with inherited state. Character identity remains stable across lighting setups, camera angles, and scene transitions.
+12 shots | 01:54 runtime | Consistent characters, setting, voices
 
 ---
 
 ## The Problem
 
-Current video generation models (Veo, Sora, Runway) optimize for Long Context Tuning. They expand context windows to generate longer clips in a single inference pass. Veo 3 generates 8-second clips. Sora 2 generates 20-25 seconds. Neither offers native long-form generation without multi-clip workarounds.
+Current video generation models optimize for Long Context Tuning. They expand context windows to generate longer clips in a single inference pass. Veo 3.1 generates 8-second clips. Runway generates similar durations. None offer native long-form generation without multi-clip workarounds.
 
 **Technical constraints of this approach:**
 
@@ -184,7 +188,7 @@ Configure in Settings:
 | **Anthropic** or **OpenAI** | Shot planning, scene analysis | Yes |
 | **ElevenLabs** | Text-to-speech, voice cloning | For audio |
 | **WaveSpeed** | Audio-driven animation | For dialogue |
-| **Google Cloud** | Veo, Gemini | For AI Director |
+| **Google Cloud** | Veo 3.1, Gemini | For AI Director |
 
 ---
 
